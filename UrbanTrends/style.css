@@ -1,0 +1,150 @@
+*{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: Helvetica;
+}
+
+body{
+background-color: black;
+}
+
+.main{
+    width: 100vw;
+    height: 100vh;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+}
+.slideshow{
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    animation: slide 12s infinite;
+    background-size: cover;
+    background-position: center;
+}
+@keyframes slide {
+    0% {background-image: url('pexels-daiangan-102129.jpg');}
+    33% {background-image: url('freestocks-_3Q3tsJ01nc-unsplash.jpg');}
+    66%{background-image: url('hunters-race-hNoSCxPWYII-unsplash.jpg');}
+    100%{background-image: url(pexels-daiangan-102129.jpg);}
+}
+
+.menu{
+    width: 100%;
+    height: 80px;
+    background-color: black;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1000;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 30px;
+    border-bottom: 2px solid #444;
+
+}
+
+.icon{
+    display: flex;
+    align-items: center;
+
+}
+
+.logo{
+    color: aliceblue;
+    font-size: 35px;
+    font-family:Helvetica;
+    font-weight: bold;
+    margin-right: 30px;
+}
+.menu nav{
+    flex-grow: 1;
+}
+.menu ul{
+    list-style: none;
+    display: flex;
+    gap: 20px;
+}
+
+.menu ul li{
+   display: inline;
+}
+
+.menu ul li a{
+    color: rgb(255, 255, 255);
+    text-decoration: none;
+    font-size: 16px;
+    padding: 10px 15px;
+    transition: 0.2s ease-in-out;
+}
+
+.menu ul li a:hover{
+    color: rgb(18, 27, 40);
+    border-radius: 5px;
+}
+
+html,body{
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+.welcome-text{
+
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 50px;
+    font-weight: bold;
+    color: aliceblue;
+    opacity: 0;
+    animation: fadeIn 2s ease-in-out forwards;
+    text-align: center;
+}
+
+@keyframes fadeIn {
+    from{
+        opacity: 0;
+        transform: translate(-50%, -60%);
+    }
+    to{
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+}
+.shop-button-container {
+    text-align: center;
+    position: absolute;
+    bottom: 40px;  
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10; 
+}
+.shop-button {
+    display: inline-block;
+    font-size: 18px;
+    font-weight: bold;
+    text-decoration: none;
+    color: white; 
+    background-color: rgba(0, 0, 0, 0.338); 
+    padding: 12px 25px;
+    border-radius: 5px;
+    position: relative;
+    overflow: hidden;
+    transition: 0.3s ease;
+}
+.shop-button:hover{
+    background-color: rgba(0, 0, 0, 0.7);
+}
