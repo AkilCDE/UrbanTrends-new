@@ -32,6 +32,10 @@ $wishlist = $pdo->prepare("
     WHERE w.customer_id = ?
 ");
 $wishlist->execute([$customer_id]);
+
+// Get customer addresses
+$addresses = $pdo->prepare("SELECT * FROM customer_addresses WHERE customer_id = ?");
+$addresses->execute([$customer_id]);
 ?>
 
 <!DOCTYPE html>
@@ -40,35 +44,33 @@ $wishlist->execute([$customer_id]);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TrendsWear - My Profile</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        :root {
-            --primary-color: #2c3e50;
-            --secondary-color: #34495e;
-            --accent-color: #3498db;
-            --light-color: #ecf0f1;
-            --danger-color: #e74c3c;
-            --success-color: #2ecc71;
-            --warning-color: #f39c12;
-        }
-        
+        /* Base Styles */
         * {
+            box-sizing: border-box;
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: Arial, sans-serif;
         }
         
         body {
-            background-color: #f5f7fa;
+            background-color: #f5f5f5;
             color: #333;
+            line-height: 1.6;
         }
         
+        /* Container */
         .profile-container {
             max-width: 1200px;
-            margin: 30px auto;
+            margin: 20px auto;
             padding: 20px;
+            background: white;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
         
+        /* Header */
         .profile-header {
             display: flex;
             justify-content: space-between;
@@ -79,23 +81,24 @@ $wishlist->execute([$customer_id]);
         }
         
         .profile-header h1 {
-            font-size: 28px;
-            color: var(--primary-color);
+            font-size: 24px;
+            color: #333;
         }
         
         .user-avatar {
-            width: 80px;
-            height: 80px;
+            width: 60px;
+            height: 60px;
             border-radius: 50%;
-            background-color: var(--accent-color);
+            background-color: #3498db;
+            color: white;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
-            font-size: 36px;
+            font-size: 24px;
             font-weight: bold;
         }
         
+        /* Tabs */
         .tabs {
             display: flex;
             border-bottom: 1px solid #ddd;
@@ -103,15 +106,15 @@ $wishlist->execute([$customer_id]);
         }
         
         .tab {
-            padding: 12px 24px;
+            padding: 10px 20px;
             cursor: pointer;
-            border-bottom: 3px solid transparent;
-            font-weight: 500;
+            border-bottom: 2px solid transparent;
         }
         
         .tab.active {
-            border-bottom-color: var(--accent-color);
-            color: var(--accent-color);
+            border-bottom-color: #3498db;
+            color: #3498db;
+            font-weight: bold;
         }
         
         .tab-content {
@@ -122,87 +125,60 @@ $wishlist->execute([$customer_id]);
             display: block;
         }
         
+        /* Cards */
         .card {
-            background-color: white;
-            border-radius: 8px;
+            background: white;
+            border-radius: 5px;
             padding: 20px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
             margin-bottom: 20px;
+            border: 1px solid #ddd;
         }
         
         .card-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
             padding-bottom: 10px;
             border-bottom: 1px solid #eee;
         }
         
         .card-header h2 {
             font-size: 18px;
-            color: var(--primary-color);
+            color: #333;
         }
         
-        table {
+        /* Forms */
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
             width: 100%;
-            border-collapse: collapse;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
         }
         
-        table th, table td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        table th {
-            background-color: #f8f9fa;
-            font-weight: 600;
-            color: var(--secondary-color);
-        }
-        
-        table tr:hover {
-            background-color: #f8f9fa;
-        }
-        
-        .status {
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        
-        .status.pending {
-            background-color: #fff3cd;
-            color: #856404;
-        }
-        
-        .status.completed {
-            background-color: #d4edda;
-            color: #155724;
-        }
-        
-        .status.shipped {
-            background-color: #cce5ff;
-            color: #004085;
-        }
-        
-        .status.cancelled {
-            background-color: #f8d7da;
-            color: #721c24;
-        }
-        
+        /* Buttons */
         .btn {
             padding: 8px 15px;
-            border-radius: 4px;
             border: none;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
-            transition: all 0.2s;
         }
         
         .btn-primary {
-            background-color: var(--accent-color);
+            background-color: #3498db;
             color: white;
         }
         
@@ -211,7 +187,7 @@ $wishlist->execute([$customer_id]);
         }
         
         .btn-danger {
-            background-color: var(--danger-color);
+            background-color: #e74c3c;
             color: white;
         }
         
@@ -219,73 +195,162 @@ $wishlist->execute([$customer_id]);
             background-color: #c0392b;
         }
         
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 500;
-        }
-        
-        .form-group input, 
-        .form-group select, 
-        .form-group textarea {
+        /* Tables */
+        table {
             width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
+            border-collapse: collapse;
+            margin-top: 15px;
         }
         
+        table th, table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        table th {
+            background-color: #f9f9f9;
+        }
+        
+        /* Status Badges */
+        .status {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .status.pending {
+            background-color: #f39c12;
+            color: white;
+        }
+        
+        .status.completed {
+            background-color: #2ecc71;
+            color: white;
+        }
+        
+        .status.shipped {
+            background-color: #3498db;
+            color: white;
+        }
+        
+        .status.cancelled {
+            background-color: #e74c3c;
+            color: white;
+        }
+        
+        /* Grid Layouts */
         .wishlist-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 20px;
+            gap: 15px;
+            margin-top: 15px;
         }
         
-        .wishlist-item {
-            border: 1px solid #eee;
-            border-radius: 8px;
-            overflow: hidden;
-            transition: all 0.3s;
+        .address-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
         }
         
-        .wishlist-item:hover {
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        .wishlist-item, .address-card {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
         }
         
         .wishlist-item img {
             width: 100%;
-            height: 180px;
+            height: 150px;
             object-fit: cover;
-        }
-        
-        .wishlist-item-details {
-            padding: 15px;
+            border-radius: 3px;
         }
         
         .wishlist-item-title {
-            font-weight: 600;
-            margin-bottom: 5px;
+            font-weight: bold;
+            margin: 10px 0 5px;
         }
         
         .wishlist-item-price {
-            color: var(--accent-color);
-            font-weight: 600;
+            color: #3498db;
+            font-weight: bold;
             margin-bottom: 10px;
         }
         
+        /* Empty State */
         .empty-state {
             text-align: center;
-            padding: 40px;
-            color: #7f8c8d;
+            padding: 40px 20px;
+            color: #777;
         }
         
         .empty-state i {
-            font-size: 48px;
+            font-size: 40px;
             margin-bottom: 15px;
             display: block;
+        }
+        
+        /* Modals */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 1000;
+            overflow: auto;
+        }
+        
+        .modal-content {
+            background-color: white;
+            margin: 50px auto;
+            padding: 20px;
+            border-radius: 5px;
+            width: 90%;
+            max-width: 600px;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        .close {
+            font-size: 24px;
+            cursor: pointer;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .profile-header {
+                flex-direction: column;
+                text-align: center;
+            }
+            
+            .user-avatar {
+                margin-top: 15px;
+            }
+            
+            .tabs {
+                flex-wrap: wrap;
+            }
+            
+            .tab {
+                flex: 1 0 auto;
+                text-align: center;
+            }
+            
+            .wishlist-grid, .address-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -472,12 +537,7 @@ $wishlist->execute([$customer_id]);
                     <button class="btn btn-primary" onclick="showAddAddressModal()">Add New Address</button>
                 </div>
                 
-                <?php
-                // Get customer addresses
-                $addresses = $pdo->prepare("SELECT * FROM customer_addresses WHERE customer_id = ?");
-                $addresses->execute([$customer_id]);
-                
-                if ($addresses->rowCount() > 0): ?>
+                <?php if ($addresses->rowCount() > 0): ?>
                     <div class="address-grid">
                         <?php while ($address = $addresses->fetch()): ?>
                             <div class="address-card">
@@ -508,105 +568,463 @@ $wishlist->execute([$customer_id]);
                 <?php endif; ?>
             </div>
         </div>
-    </div>
-    
-    <!-- Edit Profile Modal (would be shown with JavaScript) -->
-    <div id="edit-profile-modal" class="modal" style="display:none;">
-        <!-- Modal content would go here -->
-    </div>
-    
-    <!-- Order Details Modal (would be shown with JavaScript) -->
-    <div id="order-details-modal" class="modal" style="display:none;">
-        <!-- Modal content would go here -->
-    </div>
-    
-    <!-- Add Address Modal (would be shown with JavaScript) -->
-    <div id="add-address-modal" class="modal" style="display:none;">
-        <!-- Modal content would go here -->
+        
+        <!-- Edit Profile Modal -->
+        <div id="edit-profile-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Edit Profile</h2>
+                    <span class="close" onclick="closeModal('edit-profile-modal')">&times;</span>
+                </div>
+                <form id="edit-profile-form" onsubmit="updateProfile(event)">
+                    <div class="form-group">
+                        <label for="edit-first-name">First Name</label>
+                        <input type="text" id="edit-first-name" value="<?php echo htmlspecialchars($customer['first_name']); ?>" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-last-name">Last Name</label>
+                        <input type="text" id="edit-last-name" value="<?php echo htmlspecialchars($customer['last_name']); ?>" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-email">Email</label>
+                        <input type="email" id="edit-email" value="<?php echo htmlspecialchars($customer['email']); ?>" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-phone">Phone</label>
+                        <input type="tel" id="edit-phone" value="<?php echo htmlspecialchars($customer['phone'] ?? ''); ?>">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Order Details Modal -->
+        <div id="order-details-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Order Details</h2>
+                    <span class="close" onclick="closeModal('order-details-modal')">&times;</span>
+                </div>
+                <div id="order-details-content">
+                    <!-- Content will be loaded via AJAX -->
+                </div>
+            </div>
+        </div>
+        
+        <!-- Add Address Modal -->
+        <div id="add-address-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Add New Address</h2>
+                    <span class="close" onclick="closeModal('add-address-modal')">&times;</span>
+                </div>
+                <form id="add-address-form" onsubmit="saveAddress(event)">
+                    <div class="form-group">
+                        <label for="address-name">Address Name (e.g., Home, Work)</label>
+                        <input type="text" id="address-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="street-address">Street Address</label>
+                        <input type="text" id="street-address" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="city">City</label>
+                        <input type="text" id="city" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="state">State/Province</label>
+                        <input type="text" id="state" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="zip-code">ZIP/Postal Code</label>
+                        <input type="text" id="zip-code" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="country">Country</label>
+                        <input type="text" id="country" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="address-phone">Phone</label>
+                        <input type="tel" id="address-phone">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="default-address"> Set as default address
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Address</button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Edit Address Modal -->
+        <div id="edit-address-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Edit Address</h2>
+                    <span class="close" onclick="closeModal('edit-address-modal')">&times;</span>
+                </div>
+                <form id="edit-address-form" onsubmit="updateAddress(event)">
+                    <input type="hidden" id="edit-address-id">
+                    <div class="form-group">
+                        <label for="edit-address-name">Address Name</label>
+                        <input type="text" id="edit-address-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-street-address">Street Address</label>
+                        <input type="text" id="edit-street-address" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-city">City</label>
+                        <input type="text" id="edit-city" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-state">State/Province</label>
+                        <input type="text" id="edit-state" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-zip-code">ZIP/Postal Code</label>
+                        <input type="text" id="edit-zip-code" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-country">Country</label>
+                        <input type="text" id="edit-country" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-address-phone">Phone</label>
+                        <input type="tel" id="edit-address-phone">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="edit-default-address"> Set as default address
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Update Address</button>
+                </form>
+            </div>
+        </div>
     </div>
     
     <script>
+        // Initialize tabs on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            switchTab('profile');
+        });
+        
+        // Modal functions
+        function showModal(modalId) {
+            document.getElementById(modalId).style.display = 'block';
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+        
         // Tab switching
         function switchTab(tab) {
-            // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(el => {
                 el.classList.remove('active');
             });
-            
-            // Show selected tab
             document.getElementById(tab + '-tab').classList.add('active');
             
-            // Update active tab button
             document.querySelectorAll('.tab').forEach(el => {
                 el.classList.remove('active');
             });
             document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
         }
         
+        // Profile functions
+        function showEditProfileModal() {
+            showModal('edit-profile-modal');
+        }
+        
+        function updateProfile(e) {
+            e.preventDefault();
+            
+            const formData = {
+                first_name: document.getElementById('edit-first-name').value,
+                last_name: document.getElementById('edit-last-name').value,
+                email: document.getElementById('edit-email').value,
+                phone: document.getElementById('edit-phone').value
+            };
+            
+            fetch('update_profile.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Profile updated successfully!');
+                    closeModal('edit-profile-modal');
+                    location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to update profile'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating profile');
+            });
+        }
+        
         // Order functions
         function viewOrderDetails(orderId) {
-            // In a real app, this would show a modal with order details
-            alert('Viewing order #' + orderId);
-            // You would fetch order details via AJAX and display them
+            fetch('get_order_details.php?order_id=' + orderId)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        let html = `
+                            <h3>Order #${data.order.order_id}</h3>
+                            <p><strong>Date:</strong> ${new Date(data.order.order_date).toLocaleDateString()}</p>
+                            <p><strong>Status:</strong> <span class="status ${data.order.status.toLowerCase()}">${data.order.status}</span></p>
+                            <p><strong>Total:</strong> $${data.order.total_amount.toFixed(2)}</p>
+                            
+                            <h4>Items</h4>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Product</th>
+                                        <th>Price</th>
+                                        <th>Quantity</th>
+                                        <th>Subtotal</th>
+                                    </tr>
+                                </thead>
+                                <tbody>`;
+                        
+                        data.items.forEach(item => {
+                            html += `
+                                <tr>
+                                    <td>${item.name}</td>
+                                    <td>$${item.price.toFixed(2)}</td>
+                                    <td>${item.quantity}</td>
+                                    <td>$${(item.price * item.quantity).toFixed(2)}</td>
+                                </tr>`;
+                        });
+                        
+                        html += `</tbody></table>`;
+                        
+                        document.getElementById('order-details-content').innerHTML = html;
+                        showModal('order-details-modal');
+                    } else {
+                        alert('Error: ' + (data.message || 'Failed to load order details'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while loading order details');
+                });
         }
         
         function cancelOrder(orderId) {
             if (confirm('Are you sure you want to cancel this order?')) {
-                // In a real app, this would make an AJAX call to cancel the order
-                alert('Cancelling order #' + orderId);
-                // Then refresh the order list
-                location.reload();
+                fetch('cancel_order.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ order_id: orderId })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Order cancelled successfully!');
+                        location.reload();
+                    } else {
+                        alert('Error: ' + (data.message || 'Failed to cancel order'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while cancelling order');
+                });
             }
         }
         
         // Wishlist functions
         function addToCart(productId) {
-            // In a real app, this would add the item to cart via AJAX
-            alert('Adding product #' + productId + ' to cart');
+            fetch('add_to_cart.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ product_id: productId, quantity: 1 })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Product added to cart!');
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to add to cart'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while adding to cart');
+            });
         }
         
         function removeFromWishlist(productId) {
             if (confirm('Remove this item from your wishlist?')) {
-                // In a real app, this would make an AJAX call to remove the item
-                alert('Removing product #' + productId + ' from wishlist');
-                // Then refresh the wishlist
-                location.reload();
+                fetch('remove_from_wishlist.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ product_id: productId })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Item removed from wishlist!');
+                        location.reload();
+                    } else {
+                        alert('Error: ' + (data.message || 'Failed to remove from wishlist'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while removing from wishlist');
+                });
             }
-        }
-        
-        function filterWishlist() {
-            const searchTerm = document.getElementById('wishlist-search').value.toLowerCase();
-            // In a real app, this would filter the wishlist via AJAX
-            alert('Filtering wishlist with search: ' + searchTerm);
         }
         
         // Address functions
         function showAddAddressModal() {
-            // In a real app, this would show the add address modal
-            alert('Showing add address modal');
+            document.getElementById('add-address-form').reset();
+            showModal('add-address-modal');
+        }
+        
+        function saveAddress(e) {
+            e.preventDefault();
+            
+            const formData = {
+                address_name: document.getElementById('address-name').value,
+                street_address: document.getElementById('street-address').value,
+                city: document.getElementById('city').value,
+                state: document.getElementById('state').value,
+                zip_code: document.getElementById('zip-code').value,
+                country: document.getElementById('country').value,
+                phone: document.getElementById('address-phone').value,
+                is_default: document.getElementById('default-address').checked
+            };
+            
+            fetch('add_address.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Address saved successfully!');
+                    closeModal('add-address-modal');
+                    location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to save address'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while saving address');
+            });
         }
         
         function editAddress(addressId) {
-            // In a real app, this would show the edit address modal
-            alert('Editing address #' + addressId);
+            fetch('get_address.php?address_id=' + addressId)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('edit-address-id').value = data.address.address_id;
+                        document.getElementById('edit-address-name').value = data.address.address_name;
+                        document.getElementById('edit-street-address').value = data.address.street_address;
+                        document.getElementById('edit-city').value = data.address.city;
+                        document.getElementById('edit-state').value = data.address.state;
+                        document.getElementById('edit-zip-code').value = data.address.zip_code;
+                        document.getElementById('edit-country').value = data.address.country;
+                        document.getElementById('edit-address-phone').value = data.address.phone || '';
+                        document.getElementById('edit-default-address').checked = data.address.is_default;
+                        
+                        showModal('edit-address-modal');
+                    } else {
+                        alert('Error: ' + (data.message || 'Failed to load address'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while loading address');
+                });
+        }
+        
+        function updateAddress(e) {
+            e.preventDefault();
+            
+            const formData = {
+                address_id: document.getElementById('edit-address-id').value,
+                address_name: document.getElementById('edit-address-name').value,
+                street_address: document.getElementById('edit-street-address').value,
+                city: document.getElementById('edit-city').value,
+                state: document.getElementById('edit-state').value,
+                zip_code: document.getElementById('edit-zip-code').value,
+                country: document.getElementById('edit-country').value,
+                phone: document.getElementById('edit-address-phone').value,
+                is_default: document.getElementById('edit-default-address').checked
+            };
+            
+            fetch('update_address.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Address updated successfully!');
+                    closeModal('edit-address-modal');
+                    location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to update address'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating address');
+            });
         }
         
         function deleteAddress(addressId) {
             if (confirm('Delete this address?')) {
-                // In a real app, this would make an AJAX call to delete the address
-                alert('Deleting address #' + addressId);
-                // Then refresh the address list
-                location.reload();
+                fetch('delete_address.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ address_id: addressId })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Address deleted successfully!');
+                        location.reload();
+                    } else {
+                        alert('Error: ' + (data.message || 'Failed to delete address'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while deleting address');
+                });
             }
         }
         
-        // Profile functions
-        function showEditProfileModal() {
-            // In a real app, this would show the edit profile modal
-            alert('Showing edit profile modal');
-        }
-        
-        // Form submission
+        // Password change
         document.getElementById('change-password-form').addEventListener('submit', function(e) {
             e.preventDefault();
             
@@ -619,9 +1037,29 @@ $wishlist->execute([$customer_id]);
                 return;
             }
             
-            // In a real app, this would make an AJAX call to change the password
-            alert('Password change request submitted');
-            this.reset();
+            fetch('change_password.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Password changed successfully!');
+                    this.reset();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to change password'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while changing password');
+            });
         });
     </script>
 </body>

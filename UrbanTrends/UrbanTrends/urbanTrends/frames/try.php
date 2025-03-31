@@ -2,67 +2,166 @@
 // Database connection
 include 'db.php';
 
+$error = '';
+$success = '';
+
 // Check if user is logged in
+session_start();
+if (!isset($_SESSION['admin_logged_in'])) {
+    header('Location: try.php');
+    exit();
+}
 
-// Get username from session
-$username = $_SESSION['admin_username'] ?? 'Admin';
+// Handle form submissions
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    // Add Product
+    if (isset($_POST['add_product'])) {
+        $name = $_POST['name'];
+        $category = $_POST['category'];
+        $price = $_POST['price'];
+        $stock = $_POST['stock'];
+        $description = $_POST['description'];
+        $image_path = 'images/' . basename($_FILES['image']['name']);
+        
+        if (move_uploaded_file($_FILES['image']['tmp_name'], $image_path)) {
+            $stmt = $pdo->prepare("INSERT INTO products (name, category, price, stock_quantity, description, image_path) VALUES (?, ?, ?, ?, ?, ?)");
+            if ($stmt->execute([$name, $category, $price, $stock, $description, $image_path])) {
+                $success = "Product added successfully!";
+            } else {
+                $error = "Error adding product!";
+            }
+        } else {
+            $error = "Error uploading image!";
+        }
+    }
+    
+    // Edit Product
+    if (isset($_POST['edit_product'])) {
+        $product_id = $_POST['product_id'];
+        $name = $_POST['name'];
+        $category = $_POST['category'];
+        $price = $_POST['price'];
+        $stock = $_POST['stock'];
+        $description = $_POST['description'];
+        
+        if (!empty($_FILES['image']['name'])) {
+            $image_path = 'images/' . basename($_FILES['image']['name']);
+            if (move_uploaded_file($_FILES['image']['tmp_name'], $image_path)) {
+                $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, price=?, stock_quantity=?, description=?, image_path=? WHERE product_id=?");
+                $stmt->execute([$name, $category, $price, $stock, $description, $image_path, $product_id]);
+            } else {
+                $error = "Error uploading image!";
+            }
+        } else {
+            $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, price=?, stock_quantity=?, description=? WHERE product_id=?");
+            $stmt->execute([$name, $category, $price, $stock, $description, $product_id]);
+        }
+        
+        if ($stmt->rowCount() > 0) {
+            $success = "Product updated successfully!";
+        } else {
+            $error = "Error updating product or no changes made!";
+        }
+    }
+    
+    // Delete Product
+    if (isset($_POST['delete_product'])) {
+        $product_id = $_POST['product_id'];
+        $stmt = $pdo->prepare("DELETE FROM products WHERE product_id = ?");
+        if ($stmt->execute([$product_id])) {
+            $success = "Product deleted successfully!";
+        } else {
+            $error = "Error deleting product!";
+        }
+    }
+    
+    // Update Order Status
+    if (isset($_POST['update_order_status'])) {
+        $order_id = $_POST['order_id'];
+        $status = $_POST['status'];
+        
+        $stmt = $pdo->prepare("UPDATE orders SET status = ? WHERE order_id = ?");
+        if ($stmt->execute([$status, $order_id])) {
+            $success = "Order status updated successfully!";
+        } else {
+            $error = "Error updating order status!";
+        }
+    }
+    
+    // Adjust Inventory
+    if (isset($_POST['adjust_inventory'])) {
+        $product_id = $_POST['product_id'];
+        $adjustment = $_POST['adjustment'];
+        $action = $_POST['action'];
+        
+        if ($action == 'add') {
+            $stmt = $pdo->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE product_id = ?");
+        } else {
+            $stmt = $pdo->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE product_id = ?");
+        }
+        
+        if ($stmt->execute([$adjustment, $product_id])) {
+            $success = "Inventory adjusted successfully!";
+        } else {
+            $error = "Error adjusting inventory!";
+        }
+    }
+    
+    // Edit Customer
+    if (isset($_POST['edit_customer'])) {
+        $customer_id = $_POST['customer_id'];
+        $first_name = $_POST['first_name'];
+        $last_name = $_POST['last_name'];
+        $email = $_POST['email'];
+        $phone = $_POST['phone'];
+        $address = $_POST['address'];
+        
+        $stmt = $pdo->prepare("UPDATE customers SET first_name=?, last_name=?, email=?, phone=?, address=? WHERE customer_id=?");
+        if ($stmt->execute([$first_name, $last_name, $email, $phone, $address, $customer_id])) {
+            $success = "Customer updated successfully!";
+        } else {
+            $error = "Error updating customer!";
+        }
+    }
+}
 
-// Get stats data
-$total_sales = $pdo->query("SELECT SUM(total_amount) as total FROM orders WHERE status = 'Completed'")->fetch()['total'] ?? 0;
-$total_orders = $pdo->query("SELECT COUNT(*) as total FROM orders")->fetch()['total'] ?? 0;
-$total_customers = $pdo->query("SELECT COUNT(*) as total FROM customers")->fetch()['total'] ?? 0;
-$low_stock = $pdo->query("SELECT COUNT(*) as total FROM products WHERE stock_quantity < 10")->fetch()['total'] ?? 0;
+// Get product data for editing
+$edit_product = null;
+if (isset($_GET['edit_product'])) {
+    $product_id = $_GET['edit_product'];
+    $stmt = $pdo->prepare("SELECT * FROM products WHERE product_id = ?");
+    $stmt->execute([$product_id]);
+    $edit_product = $stmt->fetch();
+}
 
-// Get recent orders
-$recent_orders = $pdo->query("
-    SELECT o.order_id, o.order_date, o.total_amount, o.status, 
-           c.first_name, c.last_name 
-    FROM orders o
-    JOIN customers c ON o.customer_id = c.customer_id
-    ORDER BY o.order_date DESC
-    LIMIT 5
-");
+// Get order data for status update
+$edit_order = null;
+if (isset($_GET['edit_order'])) {
+    $order_id = $_GET['edit_order'];
+    $stmt = $pdo->prepare("SELECT * FROM orders WHERE order_id = ?");
+    $stmt->execute([$order_id]);
+    $edit_order = $stmt->fetch();
+}
 
-// Get orders for order management
-$orders = $pdo->query("
-    SELECT o.order_id, o.order_date, o.total_amount, o.status, 
-           c.first_name, c.last_name,
-           COUNT(oi.item_id) as item_count
-    FROM orders o
-    JOIN customers c ON o.customer_id = c.customer_id
-    LEFT JOIN order_items oi ON o.order_id = oi.order_id
-    GROUP BY o.order_id
-    ORDER BY o.order_date DESC
-    LIMIT 10
-");
+// Get inventory data for adjustment
+$adjust_inventory = null;
+if (isset($_GET['adjust_inventory'])) {
+    $product_id = $_GET['adjust_inventory'];
+    $stmt = $pdo->prepare("SELECT * FROM products WHERE product_id = ?");
+    $stmt->execute([$product_id]);
+    $adjust_inventory = $stmt->fetch();
+}
 
-// Get products
-$products = $pdo->query("
-    SELECT * FROM products
-    ORDER BY created_at DESC
-    LIMIT 10
-");
-
-// Get customers
-$customers = $pdo->query("
-    SELECT c.*, 
-           COUNT(o.order_id) as order_count,
-           SUM(o.total_amount) as total_spent
-    FROM customers c
-    LEFT JOIN orders o ON c.customer_id = o.customer_id
-    GROUP BY c.customer_id
-    ORDER BY c.created_at DESC
-    LIMIT 10
-");
-
-// Get inventory
-$inventory = $pdo->query("
-    SELECT p.product_id, p.name, p.category, p.stock_quantity, p.updated_at
-    FROM products p
-    ORDER BY p.stock_quantity ASC, p.updated_at DESC
-    LIMIT 10
-");
+// Get customer data for editing
+$edit_customer = null;
+if (isset($_GET['edit_customer'])) {
+    $customer_id = $_GET['edit_customer'];
+    $stmt = $pdo->prepare("SELECT * FROM customers WHERE customer_id = ?");
+    $stmt->execute([$customer_id]);
+    $edit_customer = $stmt->fetch();
+}
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -379,8 +478,8 @@ $inventory = $pdo->query("
             color: white;
             border-color: var(--accent-color);
         }
-        
-        /* Modal Styles */
+
+        /* Modal styles */
         .modal {
             display: none;
             position: fixed;
@@ -389,35 +488,32 @@ $inventory = $pdo->query("
             top: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0,0,0,0.5);
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
         }
         
         .modal-content {
-            background-color: white;
+            background-color: #fefefe;
             margin: 5% auto;
             padding: 20px;
+            border: 1px solid #888;
+            width: 50%;
             border-radius: 8px;
-            width: 60%;
-            max-width: 800px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
-            position: relative;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         
-        .close-btn {
-            position: absolute;
-            right: 20px;
-            top: 10px;
+        .close {
+            color: #aaa;
+            float: right;
             font-size: 28px;
             font-weight: bold;
             cursor: pointer;
         }
         
-        .modal h2 {
-            margin-bottom: 20px;
-            color: var(--primary-color);
+        .close:hover {
+            color: black;
         }
         
-        /* Form Styles */
         .form-group {
             margin-bottom: 15px;
         }
@@ -425,41 +521,35 @@ $inventory = $pdo->query("
         .form-group label {
             display: block;
             margin-bottom: 5px;
-            font-weight: 500;
+            font-weight: bold;
         }
         
-        .form-group input,
-        .form-group select,
+        .form-group input, 
+        .form-group select, 
         .form-group textarea {
             width: 100%;
-            padding: 8px 12px;
+            padding: 8px;
             border: 1px solid #ddd;
             border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .form-group textarea {
-            min-height: 100px;
-            resize: vertical;
         }
         
         .form-actions {
             margin-top: 20px;
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
+            text-align: right;
         }
         
-        /* Font Awesome icons */
-        .fas {
-            width: 24px;
-            text-align: center;
+        .error {
+            color: var(--danger-color);
+            margin-bottom: 15px;
+        }
+        
+        .success {
+            color: var(--success-color);
+            margin-bottom: 15px;
         }
     </style>
     <!-- Chart.js for reports -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Font Awesome for icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
     <div class="dashboard">
@@ -467,7 +557,6 @@ $inventory = $pdo->query("
         <div class="sidebar">
             <div class="sidebar-header">
                 <h2>
-                    <i class="fas fa-tshirt"></i>
                     <span>TrendsWear</span>
                 </h2>
                 <p>Admin Dashboard</p>
@@ -475,31 +564,31 @@ $inventory = $pdo->query("
             
             <div class="sidebar-menu">
                 <div class="menu-item active" onclick="showSection('dashboard')">
-                    <i class="fas fa-chart-line"></i>
+                    <i>📊</i>
                     <span>Dashboard</span>
                 </div>
                 <div class="menu-item" onclick="showSection('orders')">
-                    <i class="fas fa-boxes"></i>
+                    <i>📦</i>
                     <span>Orders</span>
                 </div>
                 <div class="menu-item" onclick="showSection('products')">
-                    <i class="fas fa-tshirt"></i>
+                    <i>👕</i>
                     <span>Products</span>
                 </div>
                 <div class="menu-item" onclick="showSection('customers')">
-                    <i class="fas fa-users"></i>
+                    <i>👥</i>
                     <span>Customers</span>
                 </div>
                 <div class="menu-item" onclick="showSection('inventory')">
-                    <i class="fas fa-warehouse"></i>
+                    <i>📦</i>
                     <span>Inventory</span>
                 </div>
                 <div class="menu-item" onclick="showSection('reports')">
-                    <i class="fas fa-chart-pie"></i>
+                    <i>📈</i>
                     <span>Reports</span>
                 </div>
-                <div class="menu-item" onclick="location.href='logout.php'">
-                    <i class="fas fa-sign-out-alt"></i>
+                <div class="menu-item" onclick="location.href='admin_logout.php'">
+                    <i>🚪</i>
                     <span>Logout</span>
                 </div>
             </div>
@@ -510,14 +599,29 @@ $inventory = $pdo->query("
             <div class="top-bar">
                 <h1 id="section-title">Dashboard</h1>
                 <div class="user-info">
-                    <div class="user-avatar"><?php echo strtoupper(substr($username, 0, 1)); ?></div>
-                    <span><?php echo htmlspecialchars($username); ?></span>
+                    <div class="user-avatar"><?php echo strtoupper(substr($_SESSION['admin_username'], 0, 1)); ?></div>
+                    <span><?php echo $_SESSION['admin_username']; ?></span>
                 </div>
             </div>
+            
+            <!-- Display success/error messages -->
+            <?php if ($error): ?>
+                <div class="error"><?php echo $error; ?></div>
+            <?php endif; ?>
+            <?php if ($success): ?>
+                <div class="success"><?php echo $success; ?></div>
+            <?php endif; ?>
             
             <!-- Dashboard Section -->
             <div id="dashboard-section" class="section-content">
                 <div class="stats-container">
+                    <?php
+                    // Get stats data
+                    $total_sales = $pdo->query("SELECT SUM(total_amount) as total FROM orders WHERE status = 'Completed'")->fetch()['total'];
+                    $total_orders = $pdo->query("SELECT COUNT(*) as total FROM orders")->fetch()['total'];
+                    $total_customers = $pdo->query("SELECT COUNT(*) as total FROM customers")->fetch()['total'];
+                    $low_stock = $pdo->query("SELECT COUNT(*) as total FROM products WHERE stock_quantity < 10")->fetch()['total'];
+                    ?>
                     <div class="stat-card">
                         <h3>Total Sales</h3>
                         <div class="value">$<?php echo number_format($total_sales, 2); ?></div>
@@ -557,16 +661,27 @@ $inventory = $pdo->query("
                             </tr>
                         </thead>
                         <tbody>
-                            <?php while ($order = $recent_orders->fetch()): ?>
-                                <tr>
-                                    <td>#<?php echo $order['order_id']; ?></td>
-                                    <td><?php echo htmlspecialchars($order['first_name'] . ' ' . $order['last_name']); ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
-                                    <td>$<?php echo number_format($order['total_amount'], 2); ?></td>
-                                    <td><span class="status <?php echo strtolower($order['status']); ?>"><?php echo ucfirst($order['status']); ?></span></td>
-                                    <td><a href="#" onclick="viewOrderDetails(<?php echo $order['order_id']; ?>)" class="btn btn-primary">View</a></td>
-                                </tr>
-                            <?php endwhile; ?>
+                            <?php
+                            $recent_orders = $pdo->query("
+                                SELECT o.order_id, o.order_date, o.total_amount, o.status, 
+                                       c.first_name, c.last_name 
+                                FROM orders o
+                                JOIN customers c ON o.customer_id = c.customer_id
+                                ORDER BY o.order_date DESC
+                                LIMIT 5
+                            ");
+                            
+                            while ($order = $recent_orders->fetch()) {
+                                echo "<tr>
+                                    <td>#{$order['order_id']}</td>
+                                    <td>{$order['first_name']} {$order['last_name']}</td>
+                                    <td>" . date('M d, Y', strtotime($order['order_date'])) . "</td>
+                                    <td>$" . number_format($order['total_amount'], 2) . "</td>
+                                    <td><span class='status {$order['status']}'>" . ucfirst($order['status']) . "</span></td>
+                                    <td><a href='#' onclick=\"updateOrderStatus({$order['order_id']})\" class='btn btn-primary'>Update</a></td>
+                                </tr>";
+                            }
+                            ?>
                         </tbody>
                     </table>
                 </div>
@@ -620,20 +735,33 @@ $inventory = $pdo->query("
                             </tr>
                         </thead>
                         <tbody id="orders-table-body">
-                            <?php while ($order = $orders->fetch()): ?>
-                                <tr>
-                                    <td>#<?php echo $order['order_id']; ?></td>
-                                    <td><?php echo htmlspecialchars($order['first_name'] . ' ' . $order['last_name']); ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
-                                    <td><?php echo $order['item_count']; ?></td>
-                                    <td>$<?php echo number_format($order['total_amount'], 2); ?></td>
-                                    <td><span class="status <?php echo strtolower($order['status']); ?>"><?php echo ucfirst($order['status']); ?></span></td>
+                            <?php
+                            $orders = $pdo->query("
+                                SELECT o.order_id, o.order_date, o.total_amount, o.status, 
+                                       c.first_name, c.last_name,
+                                       COUNT(oi.item_id) as item_count
+                                FROM orders o
+                                JOIN customers c ON o.customer_id = c.customer_id
+                                LEFT JOIN order_items oi ON o.order_id = oi.order_id
+                                GROUP BY o.order_id
+                                ORDER BY o.order_date DESC
+                                LIMIT 10
+                            ");
+                            
+                            while ($order = $orders->fetch()) {
+                                echo "<tr>
+                                    <td>#{$order['order_id']}</td>
+                                    <td>{$order['first_name']} {$order['last_name']}</td>
+                                    <td>" . date('M d, Y', strtotime($order['order_date'])) . "</td>
+                                    <td>{$order['item_count']}</td>
+                                    <td>$" . number_format($order['total_amount'], 2) . "</td>
+                                    <td><span class='status {$order['status']}'>" . ucfirst($order['status']) . "</span></td>
                                     <td>
-                                        <a href="#" onclick="viewOrderDetails(<?php echo $order['order_id']; ?>)" class="btn btn-primary">View</a>
-                                        <a href="#" onclick="updateOrderStatus(<?php echo $order['order_id']; ?>)" class="btn btn-primary">Update</a>
+                                        <a href='#' onclick=\"updateOrderStatus({$order['order_id']})\" class='btn btn-primary'>Update</a>
                                     </td>
-                                </tr>
-                            <?php endwhile; ?>
+                                </tr>";
+                            }
+                            ?>
                         </tbody>
                     </table>
                     <div class="pagination">
@@ -679,20 +807,28 @@ $inventory = $pdo->query("
                             </tr>
                         </thead>
                         <tbody id="products-table-body">
-                            <?php while ($product = $products->fetch()): ?>
-                                <tr>
-                                    <td><?php echo $product['product_id']; ?></td>
-                                    <td><img src="<?php echo htmlspecialchars($product['image_path']); ?>" alt="<?php echo htmlspecialchars($product['name']); ?>" style="width:50px;height:50px;object-fit:cover;"></td>
-                                    <td><?php echo htmlspecialchars($product['name']); ?></td>
-                                    <td><?php echo htmlspecialchars($product['category']); ?></td>
-                                    <td>$<?php echo number_format($product['price'], 2); ?></td>
-                                    <td><?php echo $product['stock_quantity']; ?></td>
+                            <?php
+                            $products = $pdo->query("
+                                SELECT * FROM products
+                                ORDER BY created_at DESC
+                                LIMIT 10
+                            ");
+                            
+                            while ($product = $products->fetch()) {
+                                echo "<tr>
+                                    <td>{$product['product_id']}</td>
+                                    <td><img src='{$product['image_path']}' alt='{$product['name']}' style='width:50px;height:50px;object-fit:cover;'></td>
+                                    <td>{$product['name']}</td>
+                                    <td>{$product['category']}</td>
+                                    <td>$" . number_format($product['price'], 2) . "</td>
+                                    <td>{$product['stock_quantity']}</td>
                                     <td>
-                                        <a href="#" onclick="editProduct(<?php echo $product['product_id']; ?>)" class="btn btn-primary">Edit</a>
-                                        <a href="#" onclick="deleteProduct(<?php echo $product['product_id']; ?>)" class="btn btn-danger">Delete</a>
+                                        <a href='#' onclick=\"editProduct({$product['product_id']})\" class='btn btn-primary'>Edit</a>
+                                        <a href='#' onclick=\"deleteProduct({$product['product_id']})\" class='btn btn-danger'>Delete</a>
                                     </td>
-                                </tr>
-                            <?php endwhile; ?>
+                                </tr>";
+                            }
+                            ?>
                         </tbody>
                     </table>
                     <div class="pagination">
@@ -728,21 +864,33 @@ $inventory = $pdo->query("
                             </tr>
                         </thead>
                         <tbody id="customers-table-body">
-                            <?php while ($customer = $customers->fetch()): ?>
-                                <?php $total_spent = $customer['total_spent'] ? number_format($customer['total_spent'], 2) : '0.00'; ?>
-                                <tr>
-                                    <td><?php echo $customer['customer_id']; ?></td>
-                                    <td><?php echo htmlspecialchars($customer['first_name'] . ' ' . $customer['last_name']); ?></td>
-                                    <td><?php echo htmlspecialchars($customer['email']); ?></td>
-                                    <td><?php echo htmlspecialchars($customer['phone']); ?></td>
-                                    <td><?php echo $customer['order_count']; ?></td>
-                                    <td>$<?php echo $total_spent; ?></td>
+                            <?php
+                            $customers = $pdo->query("
+                                SELECT c.*, 
+                                       COUNT(o.order_id) as order_count,
+                                       SUM(o.total_amount) as total_spent
+                                FROM customers c
+                                LEFT JOIN orders o ON c.customer_id = o.customer_id
+                                GROUP BY c.customer_id
+                                ORDER BY c.created_at DESC
+                                LIMIT 10
+                            ");
+                            
+                            while ($customer = $customers->fetch()) {
+                                $total_spent = $customer['total_spent'] ? number_format($customer['total_spent'], 2) : '0.00';
+                                echo "<tr>
+                                    <td>{$customer['customer_id']}</td>
+                                    <td>{$customer['first_name']} {$customer['last_name']}</td>
+                                    <td>{$customer['email']}</td>
+                                    <td>{$customer['phone']}</td>
+                                    <td>{$customer['order_count']}</td>
+                                    <td>$" . $total_spent . "</td>
                                     <td>
-                                        <a href="#" onclick="viewCustomerDetails(<?php echo $customer['customer_id']; ?>)" class="btn btn-primary">View</a>
-                                        <a href="#" onclick="editCustomer(<?php echo $customer['customer_id']; ?>)" class="btn btn-primary">Edit</a>
+                                        <a href='#' onclick=\"editCustomer({$customer['customer_id']})\" class='btn btn-primary'>Edit</a>
                                     </td>
-                                </tr>
-                            <?php endwhile; ?>
+                                </tr>";
+                            }
+                            ?>
                         </tbody>
                     </table>
                     <div class="pagination">
@@ -815,8 +963,15 @@ $inventory = $pdo->query("
                             </tr>
                         </thead>
                         <tbody id="inventory-table-body">
-                            <?php while ($item = $inventory->fetch()): ?>
-                                <?php
+                            <?php
+                            $inventory = $pdo->query("
+                                SELECT p.product_id, p.name, p.category, p.stock_quantity, p.updated_at
+                                FROM products p
+                                ORDER BY p.stock_quantity ASC, p.updated_at DESC
+                                LIMIT 10
+                            ");
+                            
+                            while ($item = $inventory->fetch()) {
                                 $status = '';
                                 if ($item['stock_quantity'] == 0) {
                                     $status = '<span class="status cancelled">Out of Stock</span>';
@@ -825,19 +980,20 @@ $inventory = $pdo->query("
                                 } else {
                                     $status = '<span class="status completed">In Stock</span>';
                                 }
-                                ?>
-                                <tr>
-                                    <td><?php echo $item['product_id']; ?></td>
-                                    <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                    <td><?php echo htmlspecialchars($item['category']); ?></td>
-                                    <td><?php echo $item['stock_quantity']; ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($item['updated_at'])); ?></td>
-                                    <td><?php echo $status; ?></td>
+                                
+                                echo "<tr>
+                                    <td>{$item['product_id']}</td>
+                                    <td>{$item['name']}</td>
+                                    <td>{$item['category']}</td>
+                                    <td>{$item['stock_quantity']}</td>
+                                    <td>" . date('M d, Y', strtotime($item['updated_at'])) . "</td>
+                                    <td>{$status}</td>
                                     <td>
-                                        <a href="#" onclick="adjustInventory(<?php echo $item['product_id']; ?>)" class="btn btn-primary">Adjust</a>
+                                        <a href='#' onclick=\"adjustInventory({$item['product_id']})\" class='btn btn-primary'>Adjust</a>
                                     </td>
-                                </tr>
-                            <?php endwhile; ?>
+                                </tr>";
+                            }
+                            ?>
                         </tbody>
                     </table>
                     <div class="pagination">
@@ -983,72 +1139,224 @@ $inventory = $pdo->query("
         </div>
     </div>
     
-    <!-- Modals -->
-    <div id="order-details-modal" class="modal">
+    <!-- Add Product Modal -->
+    <div id="addProductModal" class="modal">
         <div class="modal-content">
-            <span class="close-btn" onclick="closeModal('order-details-modal')">&times;</span>
-            <h2>Order Details</h2>
-            <div id="order-details-content"></div>
+            <span class="close" onclick="closeModal('addProductModal')">&times;</span>
+            <h2>Add New Product</h2>
+            <form method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="add_product" value="1">
+                <div class="form-group">
+                    <label for="name">Product Name</label>
+                    <input type="text" id="name" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="category">Category</label>
+                    <select id="category" name="category" required>
+                        <option value="Men">Men</option>
+                        <option value="Women">Women</option>
+                        <option value="Shoes">Shoes</option>
+                        <option value="Accessories">Accessories</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="price">Price</label>
+                    <input type="number" id="price" name="price" step="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label for="stock">Stock Quantity</label>
+                    <input type="number" id="stock" name="stock" required>
+                </div>
+                <div class="form-group">
+                    <label for="description">Description</label>
+                    <textarea id="description" name="description" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="image">Product Image</label>
+                    <input type="file" id="image" name="image" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-danger" onclick="closeModal('addProductModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Product</button>
+                </div>
+            </form>
         </div>
     </div>
     
-    <div id="product-modal" class="modal">
+    <!-- Edit Product Modal -->
+    <div id="editProductModal" class="modal">
         <div class="modal-content">
-            <span class="close-btn" onclick="closeModal('product-modal')">&times;</span>
-            <h2 id="product-modal-title">Add Product</h2>
-            <div id="product-modal-content">
-                <!-- Form will be loaded here -->
-            </div>
+            <span class="close" onclick="closeModal('editProductModal')">&times;</span>
+            <h2>Edit Product</h2>
+            <?php if ($edit_product): ?>
+            <form method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="edit_product" value="1">
+                <input type="hidden" name="product_id" value="<?php echo $edit_product['product_id']; ?>">
+                <div class="form-group">
+                    <label for="edit_name">Product Name</label>
+                    <input type="text" id="edit_name" name="name" value="<?php echo htmlspecialchars($edit_product['name']); ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit_category">Category</label>
+                    <select id="edit_category" name="category" required>
+                        <option value="Men" <?php echo $edit_product['category'] == 'Men' ? 'selected' : ''; ?>>Men</option>
+                        <option value="Women" <?php echo $edit_product['category'] == 'Women' ? 'selected' : ''; ?>>Women</option>
+                        <option value="Shoes" <?php echo $edit_product['category'] == 'Shoes' ? 'selected' : ''; ?>>Shoes</option>
+                        <option value="Accessories" <?php echo $edit_product['category'] == 'Accessories' ? 'selected' : ''; ?>>Accessories</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="edit_price">Price</label>
+                    <input type="number" id="edit_price" name="price" step="0.01" value="<?php echo $edit_product['price']; ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit_stock">Stock Quantity</label>
+                    <input type="number" id="edit_stock" name="stock" value="<?php echo $edit_product['stock_quantity']; ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit_description">Description</label>
+                    <textarea id="edit_description" name="description" rows="3"><?php echo htmlspecialchars($edit_product['description']); ?></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="edit_image">Product Image (Leave blank to keep current)</label>
+                    <input type="file" id="edit_image" name="image">
+                    <p>Current image: <?php echo basename($edit_product['image_path']); ?></p>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-danger" onclick="closeModal('editProductModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Update Product</button>
+                </div>
+            </form>
+            <?php endif; ?>
         </div>
     </div>
     
-    <div id="inventory-modal" class="modal">
+    <!-- Delete Product Modal -->
+    <div id="deleteProductModal" class="modal">
         <div class="modal-content">
-            <span class="close-btn" onclick="closeModal('inventory-modal')">&times;</span>
+            <span class="close" onclick="closeModal('deleteProductModal')">&times;</span>
+            <h2>Delete Product</h2>
+            <p>Are you sure you want to delete this product?</p>
+            <form method="POST">
+                <input type="hidden" name="delete_product" value="1">
+                <input type="hidden" name="product_id" id="delete_product_id" value="">
+                <div class="form-actions">
+                    <button type="button" class="btn btn-primary" onclick="closeModal('deleteProductModal')">Cancel</button>
+                    <button type="submit" class="btn btn-danger">Delete Product</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Update Order Status Modal -->
+    <div id="updateOrderModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('updateOrderModal')">&times;</span>
+            <h2>Update Order Status</h2>
+            <?php if ($edit_order): ?>
+            <form method="POST">
+                <input type="hidden" name="update_order_status" value="1">
+                <input type="hidden" name="order_id" value="<?php echo $edit_order['order_id']; ?>">
+                <div class="form-group">
+                    <label>Order ID: #<?php echo $edit_order['order_id']; ?></label>
+                </div>
+                <div class="form-group">
+                    <label>Current Status: <?php echo ucfirst($edit_order['status']); ?></label>
+                </div>
+                <div class="form-group">
+                    <label for="status">New Status</label>
+                    <select id="status" name="status" required>
+                        <option value="Pending" <?php echo $edit_order['status'] == 'Pending' ? 'selected' : ''; ?>>Pending</option>
+                        <option value="Processing" <?php echo $edit_order['status'] == 'Processing' ? 'selected' : ''; ?>>Processing</option>
+                        <option value="Shipped" <?php echo $edit_order['status'] == 'Shipped' ? 'selected' : ''; ?>>Shipped</option>
+                        <option value="Completed" <?php echo $edit_order['status'] == 'Completed' ? 'selected' : ''; ?>>Completed</option>
+                        <option value="Cancelled" <?php echo $edit_order['status'] == 'Cancelled' ? 'selected' : ''; ?>>Cancelled</option>
+                    </select>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-danger" onclick="closeModal('updateOrderModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Update Status</button>
+                </div>
+            </form>
+            <?php endif; ?>
+        </div>
+    </div>
+    
+    <!-- Adjust Inventory Modal -->
+    <div id="adjustInventoryModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('adjustInventoryModal')">&times;</span>
             <h2>Adjust Inventory</h2>
-            <div id="inventory-modal-content">
-                <!-- Form will be loaded here -->
-            </div>
+            <?php if ($adjust_inventory): ?>
+            <form method="POST">
+                <input type="hidden" name="adjust_inventory" value="1">
+                <input type="hidden" name="product_id" value="<?php echo $adjust_inventory['product_id']; ?>">
+                <div class="form-group">
+                    <label>Product: <?php echo htmlspecialchars($adjust_inventory['name']); ?></label>
+                </div>
+                <div class="form-group">
+                    <label>Current Stock: <?php echo $adjust_inventory['stock_quantity']; ?></label>
+                </div>
+                <div class="form-group">
+                    <label for="action">Action</label>
+                    <select id="action" name="action" required>
+                        <option value="add">Add Stock</option>
+                        <option value="subtract">Subtract Stock</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="adjustment">Quantity</label>
+                    <input type="number" id="adjustment" name="adjustment" min="1" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-danger" onclick="closeModal('adjustInventoryModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Adjust Inventory</button>
+                </div>
+            </form>
+            <?php endif; ?>
+        </div>
+    </div>
+    
+    <!-- Edit Customer Modal -->
+    <div id="editCustomerModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('editCustomerModal')">&times;</span>
+            <h2>Edit Customer</h2>
+            <?php if ($edit_customer): ?>
+            <form method="POST">
+                <input type="hidden" name="edit_customer" value="1">
+                <input type="hidden" name="customer_id" value="<?php echo $edit_customer['customer_id']; ?>">
+                <div class="form-group">
+                    <label for="edit_first_name">First Name</label>
+                    <input type="text" id="edit_first_name" name="first_name" value="<?php echo htmlspecialchars($edit_customer['first_name']); ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit_last_name">Last Name</label>
+                    <input type="text" id="edit_last_name" name="last_name" value="<?php echo htmlspecialchars($edit_customer['last_name']); ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit_email">Email</label>
+                    <input type="email" id="edit_email" name="email" value="<?php echo htmlspecialchars($edit_customer['email']); ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit_phone">Phone</label>
+                    <input type="text" id="edit_phone" name="phone" value="<?php echo htmlspecialchars($edit_customer['phone']); ?>">
+                </div>
+                <div class="form-group">
+                    <label for="edit_address">Address</label>
+                    <textarea id="edit_address" name="address" rows="3"><?php echo htmlspecialchars($edit_customer['address']); ?></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-danger" onclick="closeModal('editCustomerModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Update Customer</button>
+                </div>
+            </form>
+            <?php endif; ?>
         </div>
     </div>
     
     <script>
-        // Global variables
-        let currentOrderId = null;
-        let currentProductId = null;
-
-        // Initialize the dashboard
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize charts
-            initSalesChart();
-            
-            // Set default dates for reports
-            const today = new Date();
-            const oneMonthAgo = new Date();
-            oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-            
-            document.getElementById('report-start-date').valueAsDate = oneMonthAgo;
-            document.getElementById('report-end-date').valueAsDate = today;
-            
-            // Add event listeners
-            document.getElementById('order-search').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') filterOrders();
-            });
-            
-            document.getElementById('product-search').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') filterProducts();
-            });
-            
-            document.getElementById('customer-search').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') filterCustomers();
-            });
-            
-            document.getElementById('inventory-search').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') filterInventory();
-            });
-        });
-
-        // Section navigation
+        // Function to switch between sections
         function showSection(section) {
             // Hide all sections
             document.querySelectorAll('.section-content').forEach(el => {
@@ -1056,10 +1364,7 @@ $inventory = $pdo->query("
             });
             
             // Show selected section
-            const sectionElement = document.getElementById(section + '-section');
-            if (sectionElement) {
-                sectionElement.style.display = 'block';
-            }
+            document.getElementById(section + '-section').style.display = 'block';
             
             // Update title
             const titles = {
@@ -1070,21 +1375,13 @@ $inventory = $pdo->query("
                 'inventory': 'Inventory Management',
                 'reports': 'Reports'
             };
-            
-            const titleElement = document.getElementById('section-title');
-            if (titleElement && titles[section]) {
-                titleElement.textContent = titles[section];
-            }
+            document.getElementById('section-title').textContent = titles[section];
             
             // Update active menu item
             document.querySelectorAll('.menu-item').forEach(el => {
                 el.classList.remove('active');
             });
-            
-            const activeMenuItem = document.querySelector(`.menu-item[onclick*="showSection('${section}')"]`);
-            if (activeMenuItem) {
-                activeMenuItem.classList.add('active');
-            }
+            document.querySelector(`.menu-item[onclick="showSection('${section}')"]`).classList.add('active');
             
             // Initialize charts if needed
             if (section === 'dashboard') {
@@ -1097,396 +1394,8 @@ $inventory = $pdo->query("
                 initReportCharts();
             }
         }
-
-        // Modal functions
-        function openModal(modalId) {
-            document.getElementById(modalId).style.display = 'block';
-        }
-
-        function closeModal(modalId) {
-            document.getElementById(modalId).style.display = 'none';
-        }
-
-        // Order functions
-        function viewOrderDetails(orderId) {
-            currentOrderId = orderId;
-            
-            // Simulate AJAX call - in real app you would fetch from server
-            const orderDetails = {
-                order_id: orderId,
-                customer_name: "John Doe",
-                order_date: "May 15, 2023",
-                status: "Processing",
-                total_amount: "125.99",
-                items: [
-                    { product_name: "Men's T-Shirt", quantity: 2, price: "25.00", total: "50.00" },
-                    { product_name: "Jeans", quantity: 1, price: "75.99", total: "75.99" }
-                ]
-            };
-            
-            document.getElementById('order-details-content').innerHTML = `
-                <div class="order-info">
-                    <p><strong>Order ID:</strong> #${orderDetails.order_id}</p>
-                    <p><strong>Customer:</strong> ${orderDetails.customer_name}</p>
-                    <p><strong>Date:</strong> ${orderDetails.order_date}</p>
-                    <p><strong>Status:</strong> <span class="status ${orderDetails.status.toLowerCase()}">${orderDetails.status}</span></p>
-                    <p><strong>Total:</strong> $${orderDetails.total_amount}</p>
-                </div>
-                <div class="order-items">
-                    <h3>Items</h3>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Product</th>
-                                <th>Quantity</th>
-                                <th>Price</th>
-                                <th>Total</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${orderDetails.items.map(item => `
-                                <tr>
-                                    <td>${item.product_name}</td>
-                                    <td>${item.quantity}</td>
-                                    <td>$${item.price}</td>
-                                    <td>$${item.total}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-            openModal('order-details-modal');
-        }
-
-        function updateOrderStatus(orderId) {
-            currentOrderId = orderId;
-            
-            // Simulate getting current status - in real app you would fetch from server
-            const currentStatus = "Processing";
-            
-            document.getElementById('order-details-content').innerHTML = `
-                <form id="update-status-form">
-                    <div class="form-group">
-                        <label for="order-status">Status</label>
-                        <select id="order-status" name="status">
-                            <option value="Pending" ${currentStatus === 'Pending' ? 'selected' : ''}>Pending</option>
-                            <option value="Processing" ${currentStatus === 'Processing' ? 'selected' : ''}>Processing</option>
-                            <option value="Shipped" ${currentStatus === 'Shipped' ? 'selected' : ''}>Shipped</option>
-                            <option value="Completed" ${currentStatus === 'Completed' ? 'selected' : ''}>Completed</option>
-                            <option value="Cancelled" ${currentStatus === 'Cancelled' ? 'selected' : ''}>Cancelled</option>
-                        </select>
-                    </div>
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-primary" onclick="saveOrderStatus()">Save</button>
-                        <button type="button" class="btn btn-danger" onclick="closeModal('order-details-modal')">Cancel</button>
-                    </div>
-                </form>
-            `;
-            openModal('order-details-modal');
-        }
-
-        function saveOrderStatus() {
-            const status = document.getElementById('order-status').value;
-            
-            // Simulate AJAX call - in real app you would send to server
-            setTimeout(() => {
-                alert('Order status updated successfully to: ' + status);
-                closeModal('order-details-modal');
-                // In a real app, you would refresh the orders table
-            }, 500);
-        }
-
-        // Product functions
-        function showAddProductModal() {
-            currentProductId = null;
-            document.getElementById('product-modal-title').textContent = 'Add Product';
-            
-            document.getElementById('product-modal-content').innerHTML = `
-                <form id="product-form">
-                    <div class="form-group">
-                        <label for="product-name">Product Name</label>
-                        <input type="text" id="product-name" name="name" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-category">Category</label>
-                        <select id="product-category" name="category" required>
-                            <option value="Men">Men</option>
-                            <option value="Women">Women</option>
-                            <option value="Shoes">Shoes</option>
-                            <option value="Accessories">Accessories</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-price">Price</label>
-                        <input type="number" id="product-price" name="price" step="0.01" min="0" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-stock">Stock Quantity</label>
-                        <input type="number" id="product-stock" name="stock_quantity" min="0" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-description">Description</label>
-                        <textarea id="product-description" name="description"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-image">Image URL</label>
-                        <input type="text" id="product-image" name="image_path">
-                    </div>
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-primary" onclick="saveProduct()">Save</button>
-                        <button type="button" class="btn btn-danger" onclick="closeModal('product-modal')">Cancel</button>
-                    </div>
-                </form>
-            `;
-            openModal('product-modal');
-        }
-
-        function editProduct(productId) {
-            currentProductId = productId;
-            document.getElementById('product-modal-title').textContent = 'Edit Product';
-            
-            // Simulate getting product data - in real app you would fetch from server
-            const productData = {
-                product_id: productId,
-                name: "Men's T-Shirt",
-                category: "Men",
-                price: "25.00",
-                stock_quantity: "50",
-                description: "High quality cotton t-shirt for men",
-                image_path: "images/mens-tshirt.jpg"
-            };
-            
-            document.getElementById('product-modal-content').innerHTML = `
-                <form id="product-form">
-                    <div class="form-group">
-                        <label for="product-name">Product Name</label>
-                        <input type="text" id="product-name" name="name" value="${productData.name}" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-category">Category</label>
-                        <select id="product-category" name="category" required>
-                            <option value="Men" ${productData.category === 'Men' ? 'selected' : ''}>Men</option>
-                            <option value="Women" ${productData.category === 'Women' ? 'selected' : ''}>Women</option>
-                            <option value="Shoes" ${productData.category === 'Shoes' ? 'selected' : ''}>Shoes</option>
-                            <option value="Accessories" ${productData.category === 'Accessories' ? 'selected' : ''}>Accessories</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-price">Price</label>
-                        <input type="number" id="product-price" name="price" step="0.01" min="0" value="${productData.price}" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-stock">Stock Quantity</label>
-                        <input type="number" id="product-stock" name="stock_quantity" min="0" value="${productData.stock_quantity}" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-description">Description</label>
-                        <textarea id="product-description" name="description">${productData.description || ''}</textarea>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-image">Image URL</label>
-                        <input type="text" id="product-image" name="image_path" value="${productData.image_path || ''}">
-                    </div>
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-primary" onclick="saveProduct()">Save</button>
-                        <button type="button" class="btn btn-danger" onclick="closeModal('product-modal')">Cancel</button>
-                    </div>
-                </form>
-            `;
-            openModal('product-modal');
-        }
-
-        function saveProduct() {
-            // Simulate saving product - in real app you would send to server
-            setTimeout(() => {
-                alert('Product saved successfully');
-                closeModal('product-modal');
-                // In a real app, you would refresh the products table
-            }, 500);
-        }
-
-        function deleteProduct(productId) {
-            if (confirm('Are you sure you want to delete this product?')) {
-                // Simulate deleting product - in real app you would send to server
-                setTimeout(() => {
-                    alert('Product deleted successfully');
-                    // In a real app, you would refresh the products table
-                }, 500);
-            }
-        }
-
-        // Inventory functions
-        function adjustInventory(productId) {
-            currentProductId = productId;
-            
-            // Simulate getting product data - in real app you would fetch from server
-            const productData = {
-                product_id: productId,
-                name: "Men's T-Shirt",
-                stock_quantity: 5
-            };
-            
-            document.getElementById('inventory-modal-content').innerHTML = `
-                <form id="inventory-form">
-                    <div class="form-group">
-                        <label>Product</label>
-                        <p>${productData.name}</p>
-                    </div>
-                    <div class="form-group">
-                        <label>Current Stock</label>
-                        <p>${productData.stock_quantity}</p>
-                    </div>
-                    <div class="form-group">
-                        <label for="adjustment-type">Adjustment Type</label>
-                        <select id="adjustment-type" name="adjustment_type">
-                            <option value="add">Add Stock</option>
-                            <option value="subtract">Subtract Stock</option>
-                            <option value="set">Set Exact Quantity</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="adjustment-quantity">Quantity</label>
-                        <input type="number" id="adjustment-quantity" name="quantity" min="1" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="adjustment-reason">Reason</label>
-                        <input type="text" id="adjustment-reason" name="reason">
-                    </div>
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-primary" onclick="saveInventoryAdjustment()">Save</button>
-                        <button type="button" class="btn btn-danger" onclick="closeModal('inventory-modal')">Cancel</button>
-                    </div>
-                </form>
-            `;
-            openModal('inventory-modal');
-        }
-
-        function saveInventoryAdjustment() {
-            // Simulate saving inventory adjustment - in real app you would send to server
-            setTimeout(() => {
-                alert('Inventory adjusted successfully');
-                closeModal('inventory-modal');
-                // In a real app, you would refresh the inventory table
-            }, 500);
-        }
-
-        // Filter functions
-        function filterOrders() {
-            const searchTerm = document.getElementById('order-search').value.toLowerCase();
-            const statusFilter = document.getElementById('order-status-filter').value;
-            
-            // Simulate filtering - in real app you would fetch from server
-            alert(`Filtering orders with search: ${searchTerm} and status: ${statusFilter}`);
-        }
         
-        function filterProducts() {
-            const searchTerm = document.getElementById('product-search').value.toLowerCase();
-            const categoryFilter = document.getElementById('product-category-filter').value;
-            
-            // Simulate filtering - in real app you would fetch from server
-            alert(`Filtering products with search: ${searchTerm} and category: ${categoryFilter}`);
-        }
-        
-        function filterCustomers() {
-            const searchTerm = document.getElementById('customer-search').value.toLowerCase();
-            
-            // Simulate filtering - in real app you would fetch from server
-            alert(`Filtering customers with search: ${searchTerm}`);
-        }
-        
-        function filterInventory() {
-            const searchTerm = document.getElementById('inventory-search').value.toLowerCase();
-            const statusFilter = document.getElementById('inventory-status-filter').value;
-            
-            // Simulate filtering - in real app you would fetch from server
-            alert(`Filtering inventory with search: ${searchTerm} and status: ${statusFilter}`);
-        }
-
-        // Report functions
-        function generateReport() {
-            const startDate = document.getElementById('report-start-date').value;
-            const endDate = document.getElementById('report-end-date').value;
-            const reportType = document.getElementById('report-type').value;
-            
-            // Simulate generating report - in real app you would fetch from server
-            alert(`Generating ${reportType} report from ${startDate} to ${endDate}`);
-            
-            // Sample data for demo
-            document.getElementById('sales-report-data').innerHTML = `
-                <tr>
-                    <td>January 2023</td>
-                    <td>120</td>
-                    <td>$12,000.00</td>
-                    <td>$100.00</td>
-                    <td>25</td>
-                </tr>
-                <tr>
-                    <td>February 2023</td>
-                    <td>150</td>
-                    <td>$15,000.00</td>
-                    <td>$100.00</td>
-                    <td>30</td>
-                </tr>
-                <tr>
-                    <td>March 2023</td>
-                    <td>180</td>
-                    <td>$18,000.00</td>
-                    <td>$100.00</td>
-                    <td>35</td>
-                </tr>
-            `;
-        }
-
-        function generateProductReport() {
-            const category = document.getElementById('product-report-category').value;
-            
-            // Simulate generating report - in real app you would fetch from server
-            alert(`Generating product performance report for category: ${category}`);
-            
-            // Sample data for demo
-            document.getElementById('product-report-data').innerHTML = `
-                <tr>
-                    <td>Men's T-Shirt</td>
-                    <td>Men</td>
-                    <td>120</td>
-                    <td>$3,600.00</td>
-                    <td>15%</td>
-                </tr>
-                <tr>
-                    <td>Women's Dress</td>
-                    <td>Women</td>
-                    <td>85</td>
-                    <td>$4,250.00</td>
-                    <td>12%</td>
-                </tr>
-                <tr>
-                    <td>Running Shoes</td>
-                    <td>Shoes</td>
-                    <td>65</td>
-                    <td>$3,900.00</td>
-                    <td>10%</td>
-                </tr>
-            `;
-        }
-
-        function exportSalesReport() {
-            // Simulate exporting report - in real app you would generate and download
-            alert('Exporting sales report to CSV');
-        }
-
-        // Customer functions
-        function viewCustomerDetails(customerId) {
-            // Simulate viewing customer details - in real app you would fetch from server
-            alert(`Viewing details for customer #${customerId}`);
-        }
-
-        function editCustomer(customerId) {
-            // Simulate editing customer - in real app you would fetch from server
-            alert(`Editing customer #${customerId}`);
-        }
-
-        // Chart initialization functions
+        // Initialize sales chart
         function initSalesChart() {
             const ctx = document.getElementById('salesChart').getContext('2d');
             window.salesChart = new Chart(ctx, {
@@ -1523,7 +1432,8 @@ $inventory = $pdo->query("
                 }
             });
         }
-
+        
+        // Update sales chart based on selected period
         function updateSalesChart() {
             const period = document.getElementById('sales-period').value;
             // In a real app, you would fetch data based on the period
@@ -1548,7 +1458,8 @@ $inventory = $pdo->query("
             window.salesChart.data.datasets[0].data = data;
             window.salesChart.update();
         }
-
+        
+        // Initialize customer charts
         function initCustomerCharts() {
             // Customer Location Chart
             const locationCtx = document.getElementById('customerLocationChart').getContext('2d');
@@ -1627,7 +1538,8 @@ $inventory = $pdo->query("
                 }
             });
         }
-
+        
+        // Initialize inventory charts
         function initInventoryCharts() {
             // Inventory Levels Chart
             const levelsCtx = document.getElementById('inventoryLevelsChart').getContext('2d');
@@ -1711,7 +1623,8 @@ $inventory = $pdo->query("
                 }
             });
         }
-
+        
+        // Initialize report charts
         function initReportCharts() {
             // Sales Report Chart
             const salesReportCtx = document.getElementById('salesReportChart').getContext('2d');
@@ -1866,7 +1779,7 @@ $inventory = $pdo->query("
                 }
             });
         }
-
+        
         // Tab switching functions
         function switchCustomerTab(tab) {
             document.querySelectorAll('#customers-section .tab').forEach(el => {
@@ -1903,6 +1816,187 @@ $inventory = $pdo->query("
             });
             document.getElementById(`${tab}-tab`).classList.add('active');
         }
+        
+        // Filter functions
+        function filterOrders() {
+            const searchTerm = document.getElementById('order-search').value.toLowerCase();
+            const statusFilter = document.getElementById('order-status-filter').value;
+            
+            // In a real app, you would make an AJAX call to filter orders
+            // This is just a simulation
+            alert(`Filtering orders with search: ${searchTerm} and status: ${statusFilter}`);
+        }
+        
+        function filterProducts() {
+            const searchTerm = document.getElementById('product-search').value.toLowerCase();
+            const categoryFilter = document.getElementById('product-category-filter').value;
+            
+            // In a real app, you would make an AJAX call to filter products
+            alert(`Filtering products with search: ${searchTerm} and category: ${categoryFilter}`);
+        }
+        
+        function filterCustomers() {
+            const searchTerm = document.getElementById('customer-search').value.toLowerCase();
+            
+            // In a real app, you would make an AJAX call to filter customers
+            alert(`Filtering customers with search: ${searchTerm}`);
+        }
+        
+        function filterInventory() {
+            const searchTerm = document.getElementById('inventory-search').value.toLowerCase();
+            const statusFilter = document.getElementById('inventory-status-filter').value;
+            
+            // In a real app, you would make an AJAX call to filter inventory
+            alert(`Filtering inventory with search: ${searchTerm} and status: ${statusFilter}`);
+        }
+        
+        // Generate reports
+        function generateReport() {
+            const startDate = document.getElementById('report-start-date').value;
+            const endDate = document.getElementById('report-end-date').value;
+            const reportType = document.getElementById('report-type').value;
+            
+            // In a real app, you would make an AJAX call to generate the report
+            alert(`Generating ${reportType} report from ${startDate} to ${endDate}`);
+            
+            // Simulate updating the report data
+            document.getElementById('sales-report-data').innerHTML = `
+                <tr>
+                    <td>January 2023</td>
+                    <td>120</td>
+                    <td>$12,000.00</td>
+                    <td>$100.00</td>
+                    <td>25</td>
+                </tr>
+                <tr>
+                    <td>February 2023</td>
+                    <td>150</td>
+                    <td>$15,000.00</td>
+                    <td>$100.00</td>
+                    <td>30</td>
+                </tr>
+                <tr>
+                    <td>March 2023</td>
+                    <td>180</td>
+                    <td>$18,000.00</td>
+                    <td>$100.00</td>
+                    <td>35</td>
+                </tr>
+            `;
+        }
+        
+        function generateProductReport() {
+            const category = document.getElementById('product-report-category').value;
+            
+            // In a real app, you would make an AJAX call to generate the product report
+            alert(`Generating product performance report for category: ${category}`);
+            
+            // Simulate updating the product report data
+            document.getElementById('product-report-data').innerHTML = `
+                <tr>
+                    <td>Men's T-Shirt</td>
+                    <td>Men</td>
+                    <td>120</td>
+                    <td>$3,600.00</td>
+                    <td>15%</td>
+                </tr>
+                <tr>
+                    <td>Women's Dress</td>
+                    <td>Women</td>
+                    <td>85</td>
+                    <td>$4,250.00</td>
+                    <td>12%</td>
+                </tr>
+                <tr>
+                    <td>Running Shoes</td>
+                    <td>Shoes</td>
+                    <td>65</td>
+                    <td>$3,900.00</td>
+                    <td>10%</td>
+                </tr>
+            `;
+        }
+        
+        // Export functions
+        function exportSalesReport() {
+            alert('Exporting sales report to CSV');
+            // In a real app, you would generate and download a CSV file
+        }
+        
+        // View details functions
+        function viewOrderDetails(orderId) {
+            alert(`Viewing details for order #${orderId}`);
+            // In a real app, you would show a modal with order details
+        }
+        
+        // Modal functions
+        function showAddProductModal() {
+            document.getElementById('addProductModal').style.display = 'block';
+        }
+        
+        function editProduct(productId) {
+            window.location.href = '?edit_product=' + productId + '#products-section';
+            document.getElementById('editProductModal').style.display = 'block';
+        }
+        
+        function deleteProduct(productId) {
+            document.getElementById('delete_product_id').value = productId;
+            document.getElementById('deleteProductModal').style.display = 'block';
+        }
+        
+        function updateOrderStatus(orderId) {
+            window.location.href = '?edit_order=' + orderId + '#orders-section';
+            document.getElementById('updateOrderModal').style.display = 'block';
+        }
+        
+        function editCustomer(customerId) {
+            window.location.href = '?edit_customer=' + customerId + '#customers-section';
+            document.getElementById('editCustomerModal').style.display = 'block';
+        }
+        
+        function adjustInventory(productId) {
+            window.location.href = '?adjust_inventory=' + productId + '#inventory-section';
+            document.getElementById('adjustInventoryModal').style.display = 'block';
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+            // Remove the edit parameters from URL
+            if (window.location.href.includes('edit_product') || 
+                window.location.href.includes('edit_order') || 
+                window.location.href.includes('adjust_inventory') ||
+                window.location.href.includes('edit_customer')) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+        }
+        
+        // Initialize the dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            // Show modal if there are edit parameters in URL
+            if (window.location.href.includes('edit_product')) {
+                document.getElementById('editProductModal').style.display = 'block';
+            }
+            if (window.location.href.includes('edit_order')) {
+                document.getElementById('updateOrderModal').style.display = 'block';
+            }
+            if (window.location.href.includes('adjust_inventory')) {
+                document.getElementById('adjustInventoryModal').style.display = 'block';
+            }
+            if (window.location.href.includes('edit_customer')) {
+                document.getElementById('editCustomerModal').style.display = 'block';
+            }
+            
+            // Initialize charts
+            initSalesChart();
+            
+            // Set default dates for reports
+            const today = new Date();
+            const oneMonthAgo = new Date();
+            oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+            
+            document.getElementById('report-start-date').valueAsDate = oneMonthAgo;
+            document.getElementById('report-end-date').valueAsDate = today;
+        });
     </script>
 </body>
 </html>

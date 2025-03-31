@@ -16,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $pdo->prepare("SELECT * FROM customers WHERE email = ?");
         $stmt->execute([$email]);
         $customer = $stmt->fetch();
-        
+    
         if ($customer && password_verify($password, $customer['password_hash'])) {
             // Customer login successful
             $_SESSION['customer_id'] = $customer['customer_id'];
@@ -25,9 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['user_type'] = 'customer';
             
             // Update last login time
-            $pdo->prepare("UPDATE customers SET last_login = NOW() WHERE customer_id = ?")
-               ->execute([$customer['customer_id']]);
-            
+           
             // Redirect to account page
             header('Location: index.php');
             exit;

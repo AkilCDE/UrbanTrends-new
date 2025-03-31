@@ -20,7 +20,7 @@ session_start();
       <ul>
         <li><a href="index.php">HOME</a></li>
         <li><a href="about.php">ABOUT</a></li>
-        <li><a href="Login.php">ACCOUNT</a></li>
+        <li><a href="profile.php">ACCOUNT</a></li>
         <li><a href="explorer.php">EXPLORE</a></li>
       </ul>
     </nav>

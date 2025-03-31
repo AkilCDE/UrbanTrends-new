@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title></title>
+    <title>Explore | URBAN TRENDS</title>
     <style>
         body {
             background-color: #e6e6e6;
@@ -142,8 +143,9 @@
 <body>
 
 <header>
+    
     <div class="left-selection">
-        <div class="brand">TrendsWear</div>
+        <div class="brand">Urban Trends</div>
         <nav class="nav">
             <div class="dropdown">
                 <button class="dropdown-btn" onclick="showMenProducts()">Men ⌄</button>
