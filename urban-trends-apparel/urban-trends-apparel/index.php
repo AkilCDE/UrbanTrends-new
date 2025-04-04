@@ -84,7 +84,7 @@ if (isset($_GET['logout'])) {
             line-height: 1.6;
         }
 
-        /* Header Styles */
+        /* Updated Header Styles */
         header {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
             color: white;
@@ -93,15 +93,21 @@ if (isset($_GET['logout'])) {
             position: sticky;
             top: 0;
             z-index: 1000;
+        }
+
+        .header-container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        .container {
-            width: 90%;
-            max-width: 1200px;
-            margin: 0 auto;
+        .logo-nav-container {
+            display: flex;
+            align-items: center;
+            gap: 3rem;
         }
 
         .logo {
@@ -110,6 +116,7 @@ if (isset($_GET['logout'])) {
             display: flex;
             align-items: center;
             gap: 10px;
+            white-space: nowrap;
         }
 
         .logo a {
@@ -167,22 +174,27 @@ if (isset($_GET['logout'])) {
             width: 70%;
         }
 
-        .user-actions {
+        .auth-actions {
             display: flex;
             align-items: center;
             gap: 1.5rem;
         }
 
-        .user-actions a {
+        .auth-actions a {
             color: white;
             text-decoration: none;
-            font-size: 1.2rem;
+            font-size: 1rem;
             transition: var(--transition);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius);
         }
 
-        .user-actions a:hover {
+        .auth-actions a:hover {
+            background-color: rgba(255, 255, 255, 0.1);
             color: var(--accent-color);
-            transform: translateY(-2px);
         }
 
         .cart-count {
@@ -472,8 +484,17 @@ if (isset($_GET['logout'])) {
 
         @media (max-width: 768px) {
             header {
-                flex-direction: column;
                 padding: 1rem;
+            }
+
+            .header-container {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .logo-nav-container {
+                width: 100%;
+                justify-content: space-between;
                 gap: 1rem;
             }
 
@@ -482,7 +503,9 @@ if (isset($_GET['logout'])) {
                 justify-content: center;
             }
 
-            .user-actions {
+            .auth-actions {
+                width: 100%;
+                justify-content: center;
                 margin-top: 1rem;
             }
 
@@ -512,43 +535,63 @@ if (isset($_GET['logout'])) {
             .section-title h2 {
                 font-size: 2rem;
             }
+
+            .auth-actions a span,
+            nav a span {
+                display: none;
+            }
+
+            .auth-actions a i,
+            nav a i {
+                font-size: 1.2rem;
+            }
         }
     </style>
 </head>
 <body>
     <header>
-        <div class="container">
-            <div class="logo">
-                <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
+        <div class="header-container">
+            <div class="logo-nav-container">
+                <div class="logo">
+                    <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
+                </div>
+                <nav>
+                    <ul>
+                        <li><a href="index.php"><i class="fas fa-home"></i> <span>Home</span></a></li>
+                        <li><a href="shop.php"><i class="fas fa-store"></i> <span>Shop</span></a></li>
+                        <li><a href="about.php"><i class="fas fa-info-circle"></i> <span>About</span></a></li>
+                        <li><a href="contact.php"><i class="fas fa-envelope"></i> <span>Contact</span></a></li>
+                    </ul>
+                </nav>
             </div>
-            <nav>
-                <ul>
-                    <li><a href="index.php"><i class="fas fa-home"></i> Home</a></li>
-                    <li><a href="shop.php"><i class="fas fa-store"></i> Shop</a></li>
-                    <li><a href="about.php"><i class="fas fa-info-circle"></i> About</a></li>
-                    <li><a href="contact.php"><i class="fas fa-envelope"></i> Contact</a></li>
-                </ul>
-            </nav>
-            <div class="user-actions">
+            
+            <div class="auth-actions">
                 <?php if ($auth->isLoggedIn()): ?>
-                    <a href="profile.php" title="Profile"><i class="fas fa-user"></i></a>
-                    <?php if ($auth->isAdmin()): ?>
-                        <a href="admin/dashboard.php" title="Admin"><i class="fas fa-cog"></i></a>
-                    <?php endif; ?>
-                    <a href="wishlist.php" title="Wishlist"><i class="fas fa-heart"></i></a>
-                    <a href="cart.php" class="cart-count" title="Cart">
-                        <i class="fas fa-shopping-cart"></i>
-                        <span id="cart-counter"><?php echo count($_SESSION['cart'] ?? []); ?></span>
+                    <a href="profile.php" title="Profile">
+                        <i class="fas fa-user"></i>
+                        <span>Profile</span>
                     </a>
-                    <a href="?logout=1" title="Logout"><i class="fas fa-sign-out-alt"></i></a>
+                    <a href="?logout=1" title="Logout">
+                        <i class="fas fa-sign-out-alt"></i>
+                        <span>Logout</span>
+                    </a>
+                    <?php if ($auth->isAdmin()): ?>
+                        <a href="admin/dashboard.php" title="Admin">
+                            <i class="fas fa-cog"></i>
+                            <span>Admin</span>
+                        </a>
+                    <?php endif; ?>
                 <?php else: ?>
-                    <a href="login.php" title="Login"><i class="fas fa-sign-in-alt"></i></a>
-                    <a href="register.php" title="Register"><i class="fas fa-user-plus"></i></a>
-                    <a href="cart.php" class="cart-count" title="Cart">
-                        <i class="fas fa-shopping-cart"></i>
-                        <span id="cart-counter">0</span>
+                    <a href="login.php" title="Login">
+                        <i class="fas fa-sign-in-alt"></i>
+                        <span>Login</span>
+                    </a>
+                    <a href="register.php" title="Register">
+                        <i class="fas fa-user-plus"></i>
+                        <span>Register</span>
                     </a>
                 <?php endif; ?>
+               
             </div>
         </div>
     </header>

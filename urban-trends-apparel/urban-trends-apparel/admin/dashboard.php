@@ -62,6 +62,123 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
         $stmt->execute([$stock_change, $product_id]);
     }
+    
+    // Handle order shipping confirmation
+    if (isset($_POST['confirm_shipping'])) {
+        $order_id = intval($_POST['order_id']);
+        
+        try {
+            // Update order status to 'shipped' and set shipping date
+            $stmt = $db->prepare("UPDATE orders SET status = 'shipped', shipping_date = NOW() WHERE id = ?");
+            $stmt->execute([$order_id]);
+            
+            $_SESSION['success_message'] = "Order #$order_id has been marked as shipped!";
+            header("Location: dashboard.php");
+            exit;
+        } catch (PDOException $e) {
+            $_SESSION['error_message'] = "Error updating order status: " . $e->getMessage();
+            header("Location: dashboard.php");
+            exit;
+        }
+    }
+    
+    // Handle order delivery confirmation
+    if (isset($_POST['confirm_delivery'])) {
+        $order_id = intval($_POST['order_id']);
+        
+        try {
+            // Update order status to 'delivered' and set delivery date
+            $stmt = $db->prepare("UPDATE orders SET status = 'delivered', delivery_date = NOW() WHERE id = ?");
+            $stmt->execute([$order_id]);
+            
+            // Also update shipping status if needed
+            $stmt = $db->prepare("UPDATE shipping SET status = 'delivered', actual_delivery = NOW() WHERE order_id = ?");
+            $stmt->execute([$order_id]);
+            
+            $_SESSION['success_message'] = "Order #$order_id has been marked as delivered!";
+            header("Location: dashboard.php");
+            exit;
+        } catch (PDOException $e) {
+            $_SESSION['error_message'] = "Error updating order status: " . $e->getMessage();
+            header("Location: dashboard.php");
+            exit;
+        }
+    }
+    
+    // Handle order cancellation
+    if (isset($_POST['cancel_order'])) {
+        $order_id = intval($_POST['order_id']);
+        $reason = htmlspecialchars($_POST['cancel_reason']);
+        
+        try {
+            // Update order status to 'cancelled' and set cancellation reason
+            $stmt = $db->prepare("UPDATE orders SET status = 'cancelled', cancellation_reason = ? WHERE id = ?");
+            $stmt->execute([$reason, $order_id]);
+            
+            $_SESSION['success_message'] = "Order #$order_id has been cancelled!";
+            header("Location: dashboard.php");
+            exit;
+        } catch (PDOException $e) {
+            $_SESSION['error_message'] = "Error cancelling order: " . $e->getMessage();
+            header("Location: dashboard.php");
+            exit;
+        }
+    }
+
+    // Handle return/refund status changes
+    if (isset($_POST['update_return_status'])) {
+        $order_id = intval($_POST['order_id']);
+        $new_status = $_POST['new_status'];
+        $message = htmlspecialchars($_POST['message']);
+        
+        try {
+            // Get order details including user email
+            $stmt = $db->prepare("SELECT u.email, o.user_id FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?");
+            $stmt->execute([$order_id]);
+            $order = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($order) {
+                // Update order status
+                $stmt = $db->prepare("UPDATE orders SET status = ? WHERE id = ?");
+                $stmt->execute([$new_status, $order_id]);
+                
+                // Add to status history
+                $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
+                $stmt->execute([$order_id, $new_status, $message]);
+                
+                // Send email notification to customer
+                $subject = "Your Order #$order_id Status Update";
+                $email_message = "Your order status has been updated to: " . ucfirst(str_replace('_', ' ', $new_status)) . "\n\n";
+                $email_message .= "Message from admin:\n" . $message . "\n\n";
+                $email_message .= "Thank you for shopping with us!";
+                
+                $stmt = $db->prepare("INSERT INTO email_notifications (recipient_email, subject, message, status) VALUES (?, ?, ?, 'queued')");
+                $stmt->execute([$order['email'], $subject, $email_message]);
+                
+                // If refunding, also create a payment record
+                if ($new_status === 'refunded') {
+                    $stmt = $db->prepare("
+                        INSERT INTO payments (order_id, amount, payment_method, status, payment_date)
+                        SELECT id, total_amount, 'refund', 'completed', NOW() 
+                        FROM orders 
+                        WHERE id = ?
+                    ");
+                    $stmt->execute([$order_id]);
+                }
+                
+                $_SESSION['success_message'] = "Order #$order_id status updated to " . $new_status . " and customer notified!";
+            } else {
+                $_SESSION['error_message'] = "Order not found!";
+            }
+            
+            header("Location: dashboard.php");
+            exit;
+        } catch (PDOException $e) {
+            $_SESSION['error_message'] = "Error updating order status: " . $e->getMessage();
+            header("Location: dashboard.php");
+            exit;
+        }
+    }
 }
 
 // Get statistics for dashboard
@@ -75,6 +192,16 @@ $lowStockProducts = $db->query("SELECT * FROM products WHERE stock < 10 ORDER BY
 
 // Get recent orders
 $recentOrders = $db->query("SELECT o.*, u.email FROM orders o JOIN users u ON o.user_id = u.id ORDER BY order_date DESC LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
+
+// Get return/refund requests
+$returnRequests = $db->query("
+    SELECT o.id as order_id, o.status, o.order_date, o.total_amount, 
+           u.id as user_id, u.email, u.firstname, u.lastname
+    FROM orders o
+    JOIN users u ON o.user_id = u.id
+    WHERE o.status IN ('return_requested', 'returned', 'refunded')
+    ORDER BY o.order_date DESC
+")->fetchAll(PDO::FETCH_ASSOC);
 
 // Get popular products (most ordered)
 $popularProducts = $db->query("
@@ -531,6 +658,125 @@ if (isset($_GET['logout'])) {
             margin-bottom: 5px;
         }
         
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            width: 400px;
+            max-width: 90%;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .modal h3 {
+            margin-bottom: 15px;
+            color: var(--dark-color);
+        }
+        
+        .modal p {
+            margin-bottom: 20px;
+            color: #666;
+        }
+        
+        .form-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background-color: #5a6268;
+        }
+        
+        /* Enhanced Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .modal-dialog {
+            background-color: white;
+            border-radius: 8px;
+            padding: 25px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            transform: translateY(-20px);
+            transition: all 0.3s ease;
+        }
+        
+        .modal-overlay.active .modal-dialog {
+            transform: translateY(0);
+        }
+        
+        .modal-header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .modal-header h3 {
+            margin: 0;
+            color: var(--dark-color);
+            font-size: 1.3rem;
+            display: flex;
+            align-items: center;
+        }
+        
+        .modal-header h3 i {
+            margin-right: 10px;
+        }
+        
+        .modal-body {
+            margin-bottom: 25px;
+        }
+        
+        .modal-body p {
+            color: #666;
+            line-height: 1.5;
+        }
+        
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        
         /* Responsive Styles */
         @media (max-width: 768px) {
             .admin-sidebar {
@@ -618,6 +864,7 @@ if (isset($_GET['logout'])) {
             <li><a href="orders.php"><i class="fas fa-shopping-bag"></i> <span>Orders</span></a></li>
             <li><a href="customers.php"><i class="fas fa-users"></i> <span>Customers</span></a></li>
             <li><a href="reports.php"><i class="fas fa-chart-bar"></i> <span>Reports</span></a></li>
+            
         </ul>
     </div>
 
@@ -633,10 +880,12 @@ if (isset($_GET['logout'])) {
 
         <!-- Tabs -->
         <div class="tabs">
+            
             <div class="tab active" onclick="switchTab('dashboard')">Dashboard</div>
             <div class="tab" onclick="switchTab('inventory')">Inventory Management</div>
             <div class="tab" onclick="switchTab('reports')">Reports</div>
             <div class="tab" onclick="switchTab('add-product')">Add Product</div>
+            <div class="tab" onclick="switchTab('returns')">Returns/Refunds</div>
         </div>
 
         <!-- Dashboard Tab -->
@@ -684,7 +933,7 @@ if (isset($_GET['logout'])) {
                                 <th>Date</th>
                                 <th>Amount</th>
                                 <th>Status</th>
-                                <th>Action</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -703,6 +952,18 @@ if (isset($_GET['logout'])) {
                                         <a href="order_details.php?id=<?php echo $order['id']; ?>" class="btn btn-primary">
                                             <i class="fas fa-eye"></i> View
                                         </a>
+                                        <?php if ($order['status'] == 'processing'): ?>
+                                            <button type="button" class="btn btn-success" onclick="showShippingModal(<?php echo $order['id']; ?>)">
+                                                <i class="fas fa-truck"></i> Ship
+                                            </button>
+                                            <button type="button" class="btn btn-danger" onclick="showCancelModal(<?php echo $order['id']; ?>)">
+                                                <i class="fas fa-times"></i> Cancel
+                                            </button>
+                                        <?php elseif ($order['status'] == 'shipped'): ?>
+                                            <button type="button" class="btn btn-success" onclick="showDeliveryModal(<?php echo $order['id']; ?>)">
+                                                <i class="fas fa-check-circle"></i> Deliver
+                                            </button>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -917,12 +1178,72 @@ if (isset($_GET['logout'])) {
                 </form>
             </div>
         </div>
+
+        <div id="returns" class="tab-content">
+            <div class="table-container">
+                <h3><i class="fas fa-exchange-alt"></i> Return & Refund Requests</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Order #</th>
+                            <th>Customer</th>
+                            <th>Date</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($returnRequests as $request): ?>
+                            <tr>
+                                <td>#<?php echo $request['order_id']; ?></td>
+                                <td><?php echo $request['firstname'] . ' ' . $request['lastname']; ?><br><small><?php echo $request['email']; ?></small></td>
+                                <td><?php echo date('M d, Y', strtotime($request['order_date'])); ?></td>
+                                <td>$<?php echo number_format($request['total_amount'], 2); ?></td>
+                                <td>
+                                    <span class="status <?php echo $request['status']; ?>">
+                                        <?php echo ucfirst(str_replace('_', ' ', $request['status'])); ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="return-actions">
+                                        <a href="order_details.php?id=<?php echo $request['order_id']; ?>" class="btn btn-primary">
+                                            <i class="fas fa-eye"></i> View
+                                        </a>
+                                        <?php if ($request['status'] == 'return_requested'): ?>
+                                            <button type="button" class="btn btn-success" onclick="showReturnModal(<?php echo $request['order_id']; ?>, 'returned')">
+                                                <i class="fas fa-check"></i> Approve Return
+                                            </button>
+                                            <button type="button" class="btn btn-info" onclick="showReturnModal(<?php echo $request['order_id']; ?>, 'refunded')">
+                                                <i class="fas fa-money-bill-wave"></i> Refund
+                                            </button>
+                                            <button type="button" class="btn btn-warning" onclick="showReturnModal(<?php echo $request['order_id']; ?>, 'processing')">
+                                                <i class="fas fa-times"></i> Reject
+                                            </button>
+                                        <?php elseif ($request['status'] == 'returned'): ?>
+                                            <button type="button" class="btn btn-info" onclick="showReturnModal(<?php echo $request['order_id']; ?>, 'refunded')">
+                                                <i class="fas fa-money-bill-wave"></i> Process Refund
+                                            </button>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($returnRequests)): ?>
+                            <tr>
+                                <td colspan="6" style="text-align: center;">No return or refund requests at this time.</td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- Stock Update Modal -->
-    <div id="stockModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
-        <div style="background-color: white; margin: 10% auto; padding: 20px; border-radius: 8px; width: 400px; max-width: 90%;">
-            <h3 id="modalTitle" style="margin-bottom: 20px;"></h3>
+    <div id="stockModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h3 id="modalTitle"></h3>
             <form id="stockForm" method="POST">
                 <input type="hidden" id="product_id" name="product_id">
                 <div class="form-group">
@@ -934,15 +1255,118 @@ if (isset($_GET['logout'])) {
                     </div>
                     <small>Positive numbers add stock, negative numbers remove stock</small>
                 </div>
-                <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
-                    <button type="button" class="btn btn-danger" style="margin-right: 10px;" onclick="closeStockModal()">
-                        <i class="fas fa-times"></i> Cancel
-                    </button>
-                    <button type="submit" name="update_stock" class="btn btn-success">
-                        <i class="fas fa-save"></i> Update Stock
-                    </button>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeStockModal()">Cancel</button>
+                    <button type="submit" name="update_stock" class="btn btn-success">Update Stock</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Shipping Confirmation Modal -->
+    <div id="shippingModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3><i class="fas fa-truck"></i> Confirm Order Shipping</h3>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to mark this order as shipped? This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <form id="shippingForm" method="POST" style="width: 100%;">
+                    <input type="hidden" name="order_id" id="shipping_order_id">
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="hideShippingModal()">
+                            <i class="fas fa-times"></i> Cancel
+                        </button>
+                        <button type="submit" name="confirm_shipping" class="btn btn-success">
+                            <i class="fas fa-check"></i> Confirm Shipping
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delivery Confirmation Modal -->
+    <div id="deliveryModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3><i class="fas fa-check-circle"></i> Confirm Order Delivery</h3>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure the customer has received this order? This will mark the order as delivered.</p>
+            </div>
+            <div class="modal-footer">
+                <form id="deliveryForm" method="POST" style="width: 100%;">
+                    <input type="hidden" name="order_id" id="delivery_order_id">
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="hideDeliveryModal()">
+                            <i class="fas fa-times"></i> Cancel
+                        </button>
+                        <button type="submit" name="confirm_delivery" class="btn btn-success">
+                            <i class="fas fa-check"></i> Confirm Delivery
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Order Cancellation Modal -->
+    <div id="cancelModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3><i class="fas fa-exclamation-triangle"></i> Cancel Order</h3>
+            </div>
+            <div class="modal-body">
+                <form id="cancelForm" method="POST">
+                    <input type="hidden" name="order_id" id="cancel_order_id">
+                    <div class="form-group">
+                        <label for="cancel_reason">Reason for Cancellation</label>
+                        <textarea id="cancel_reason" name="cancel_reason" class="form-control" required 
+                                placeholder="Please specify the reason for cancellation (e.g., out of stock, customer request)..."></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="hideCancelModal()">
+                            <i class="fas fa-arrow-left"></i> Back
+                        </button>
+                        <button type="submit" name="cancel_order" class="btn btn-danger">
+                            <i class="fas fa-ban"></i> Confirm Cancellation
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Return/Refund Status Modal -->
+    <div id="returnModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3><i class="fas fa-exchange-alt"></i> <span id="returnModalTitle">Update Order Status</span></h3>
+            </div>
+            <div class="modal-body">
+                <form id="returnForm" method="POST">
+                    <input type="hidden" name="order_id" id="return_order_id">
+                    <input type="hidden" name="new_status" id="return_new_status">
+                    
+                    <div class="form-group">
+                        <label for="return_message">Message to Customer</label>
+                        <textarea id="return_message" name="message" class="form-control" rows="4" required
+                                  placeholder="Enter a message to send to the customer about this status change..."></textarea>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="hideReturnModal()">
+                            <i class="fas fa-times"></i> Cancel
+                        </button>
+                        <button type="submit" name="update_return_status" class="btn btn-success">
+                            <i class="fas fa-check"></i> Update Status
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -966,7 +1390,8 @@ if (isset($_GET['logout'])) {
             document.getElementById('product_id').value = productId;
             document.getElementById('modalTitle').textContent = `Update Stock: ${productName}`;
             document.getElementById('stock_change').value = 0;
-            document.getElementById('stockModal').style.display = 'block';
+            document.getElementById('stockModal').style.display = 'flex';
+            
         }
         
         function closeStockModal() {
@@ -981,12 +1406,139 @@ if (isset($_GET['logout'])) {
             input.value = value;
         }
         
-        // Close modal when clicking outside
-        window.onclick = function(event) {
-            if (event.target == document.getElementById('stockModal')) {
-                closeStockModal();
-            }
+        // Shipping modal functions
+        function showShippingModal(orderId) {
+            document.getElementById('shipping_order_id').value = orderId;
+            document.getElementById('shippingModal').classList.add('active');
+            document.body.style.overflow = 'hidden';
         }
+        
+        function hideShippingModal() {
+            document.getElementById('shippingModal').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+        
+        // Delivery modal functions
+        function showDeliveryModal(orderId) {
+            document.getElementById('delivery_order_id').value = orderId;
+            document.getElementById('deliveryModal').classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function hideDeliveryModal() {
+            document.getElementById('deliveryModal').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+        
+        // Cancellation modal functions
+        function showCancelModal(orderId) {
+            document.getElementById('cancel_order_id').value = orderId;
+            document.getElementById('cancelModal').classList.add('active');
+            document.body.style.overflow = 'hidden';
+            // Clear any previous reason
+            document.getElementById('cancel_reason').value = '';
+        }
+        
+        function hideCancelModal() {
+            document.getElementById('cancelModal').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+        
+         // Return/Refund modal functions
+         function showReturnModal(orderId, newStatus) {
+            const modal = document.getElementById('returnModal');
+            const title = document.getElementById('returnModalTitle');
+            const statusInput = document.getElementById('return_new_status');
+            const orderInput = document.getElementById('return_order_id');
+            
+            // Set modal title based on action
+            let actionText = '';
+            switch(newStatus) {
+                case 'returned':
+                    actionText = 'Approve Return';
+                    break;
+                case 'refunded':
+                    actionText = 'Process Refund';
+                    break;
+                case 'processing':
+                    actionText = 'Reject Return Request';
+                    break;
+                default:
+                    actionText = 'Update Status';
+            }
+            
+            title.textContent = actionText + ' for Order #' + orderId;
+            statusInput.value = newStatus;
+            orderInput.value = orderId;
+            
+            // Clear any previous message
+            document.getElementById('return_message').value = '';
+            
+            // Show modal
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function hideReturnModal() {
+            document.getElementById('returnModal').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+        
+        // Close modals when clicking outside
+        document.querySelectorAll('.modal-overlay').forEach(modal => {
+            modal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    if (this.id === 'stockModal') hideStockModal();
+                    if (this.id === 'shippingModal') hideShippingModal();
+                    if (this.id === 'deliveryModal') hideDeliveryModal();
+                    if (this.id === 'cancelModal') hideCancelModal();
+                    if (this.id === 'returnModal') hideReturnModal();
+                }
+            });
+        });
+        
+        // Form validation for cancellation
+        document.getElementById('cancelForm').addEventListener('submit', function(e) {
+            const reason = document.getElementById('cancel_reason').value.trim();
+            if (!reason) {
+                e.preventDefault();
+                alert('Please provide a cancellation reason');
+                document.getElementById('cancel_reason').focus();
+            }
+        });
+        
+         // Form validation for return/refund
+         document.getElementById('returnForm').addEventListener('submit', function(e) {
+            const message = document.getElementById('return_message').value.trim();
+            if (!message) {
+                e.preventDefault();
+                alert('Please enter a message to send to the customer');
+                document.getElementById('return_message').focus();
+            }
+        });
+        // Success/error message handling
+        document.addEventListener('DOMContentLoaded', function() {
+            <?php if (isset($_SESSION['success_message'])): ?>
+                alert('<?php echo $_SESSION['success_message']; ?>');
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+            
+            <?php if (isset($_SESSION['error_message'])): ?>
+                alert('Error: <?php echo $_SESSION['error_message']; ?>');
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+            
+            // Close modals with Escape key
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    hideStockModal();
+                    hideShippingModal();
+                    hideDeliveryModal();
+                    hideCancelModal();
+                    hideReturnModal();
+                }
+            });
+        });
         
         // Inventory search
         document.getElementById('inventorySearch').addEventListener('input', function() {

@@ -92,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Create order
         $stmt = $db->prepare("
             INSERT INTO orders (user_id, total_amount, shipping_address, status) 
-            VALUES (?, ?, ?, 'pending')
+            VALUES (?, ?, ?, 'processing')
         ");
         $stmt->execute([
             $user_id,

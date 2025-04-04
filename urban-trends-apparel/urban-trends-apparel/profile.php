@@ -56,6 +56,12 @@ $user = $auth->getCurrentUser();
 $page_title = 'Profile';
 $message = '';
 
+if (isset($_GET['logout'])) {
+    $auth->logout();
+    header("Location: login.php");
+    exit;
+}
+
 // Helper functions
 function sanitize($data) {
     return htmlspecialchars(strip_tags(trim($data)));
@@ -85,6 +91,73 @@ function getOrderItems($db, $order_id) {
     $stmt = $db->prepare("SELECT oi.*, p.name, p.image FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?");
     $stmt->execute([$order_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function isInWishlist($db, $user_id, $product_id) {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM wishlist WHERE user_id = ? AND product_id = ?");
+    $stmt->execute([$user_id, $product_id]);
+    return $stmt->fetchColumn() > 0;
+}
+
+function canReturnOrder($order) {
+    // Only delivered orders can be returned
+    if ($order['status'] !== 'delivered') {
+        return false;
+    }
+    
+    // Check if order was delivered within the last 30 days
+    $delivered_date = strtotime($order['order_date']);
+    $thirty_days_ago = strtotime('-30 days');
+    
+    return $delivered_date >= $thirty_days_ago;
+}
+
+function processReturn($db, $order_id, $user_id) {
+    try {
+        // Begin transaction
+        $db->beginTransaction();
+        
+        // 1. Check if the order exists and belongs to the user
+        $stmt = $db->prepare("SELECT * FROM orders WHERE id = ? AND user_id = ?");
+        $stmt->execute([$order_id, $user_id]);
+        $order = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$order) {
+            throw new Exception("Order not found or doesn't belong to you.");
+        }
+        
+        // 2. Check if order is eligible for return (must be delivered)
+        if ($order['status'] !== 'delivered') {
+            throw new Exception("Only delivered orders can be returned.");
+        }
+        
+        // 3. Update order status to 'returned'
+        $stmt = $db->prepare("UPDATE orders SET status = 'returned' WHERE id = ?");
+        $stmt->execute([$order_id]);
+        
+        // 4. Add to order status history
+        $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
+        $stmt->execute([$order_id, 'returned', 'Customer initiated return']);
+        
+        // 5. Update shipping status if shipping record exists
+        $stmt = $db->prepare("UPDATE shipping SET status = 'returned' WHERE order_id = ?");
+        $stmt->execute([$order_id]);
+        
+        // 6. Restock products if needed
+        $order_items = getOrderItems($db, $order_id);
+        foreach ($order_items as $item) {
+            $stmt = $db->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
+            $stmt->execute([$item['quantity'], $item['product_id']]);
+        }
+        
+        // Commit transaction
+        $db->commit();
+        
+        return true;
+    } catch (Exception $e) {
+        $db->rollBack();
+        return $e->getMessage();
+    }
 }
 
 // Handle Add to Cart and Buy Now actions
@@ -226,16 +299,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'cancel') {
             $stmt = $db->prepare("UPDATE orders SET status = 'cancelled' WHERE id = ? AND user_id = ?");
             if ($stmt->execute([$order_id, $user['id']])) {
+                // Add to status history
+                $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
+                $stmt->execute([$order_id, 'cancelled', 'Customer cancelled order']);
+                
                 $message = display_success('Order cancelled successfully!');
             } else {
                 $message = display_error('Error cancelling order.');
             }
         } elseif ($action === 'return') {
-            $stmt = $db->prepare("UPDATE orders SET status = 'return_requested' WHERE id = ? AND user_id = ?");
-            if ($stmt->execute([$order_id, $user['id']])) {
-                $message = display_success('Return request submitted!');
+            $result = processReturn($db, $order_id, $user['id']);
+            if ($result === true) {
+                $message = display_success('Return processed successfully! Your items will be picked up soon.');
             } else {
-                $message = display_error('Error submitting return request.');
+                $message = display_error($result);
             }
         }
     }
@@ -258,13 +335,6 @@ if ($auth->isLoggedIn()) {
     $stmt = $db->prepare("SELECT COUNT(*) FROM cart WHERE user_id = ?");
     $stmt->execute([$_SESSION['user_id']]);
     $cart_count = $stmt->fetchColumn();
-}
-
-// Check if product is in wishlist
-function isInWishlist($db, $user_id, $product_id) {
-    $stmt = $db->prepare("SELECT COUNT(*) FROM wishlist WHERE user_id = ? AND product_id = ?");
-    $stmt->execute([$user_id, $product_id]);
-    return $stmt->fetchColumn() > 0;
 }
 ?>
 
@@ -631,6 +701,21 @@ function isInWishlist($db, $user_id, $product_id) {
             color: #fa5252;
         }
 
+        .status-return_requested {
+            background-color: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+
+        .status-returned {
+            background-color: rgba(13, 110, 253, 0.2);
+            color: #0d6efd;
+        }
+
+        .status-refunded {
+            background-color: rgba(25, 135, 84, 0.2);
+            color: #198754;
+        }
+
         /* Wishlist Items */
         .wishlist-items {
             display: grid;
@@ -830,6 +915,28 @@ function isInWishlist($db, $user_id, $product_id) {
             border-left: 4px solid var(--error-color);
         }
 
+        /* Return History Styles */
+        .history-details {
+            background-color: rgba(0, 0, 0, 0.1);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .history-details ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+
+        .history-details li {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .history-details li:last-child {
+            border-bottom: none;
+        }
+
         /* Footer */
         footer {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
@@ -986,19 +1093,10 @@ function isInWishlist($db, $user_id, $product_id) {
                 <?php if ($auth->isAdmin()): ?>
                     <a href="admin/dashboard.php" title="Admin"><i class="fas fa-cog"></i></a>
                 <?php endif; ?>
-                <a href="wishlist.php" title="Wishlist"><i class="fas fa-heart"></i></a>
-                <a href="cart.php" class="cart-count" title="Cart">
-                    <i class="fas fa-shopping-cart"></i>
-                    <span id="cart-counter"><?php echo $cart_count; ?></span>
-                </a>
-                <a href="?logout=1" title="Logout"><i class="fas fa-sign-out-alt"></i></a>
+                <a href="?logout=1" title="Logout"><i class="fas fa-sign-out-alt"></i> logout</a>
             <?php else: ?>
                 <a href="login.php" title="Login"><i class="fas fa-sign-in-alt"></i></a>
                 <a href="register.php" title="Register"><i class="fas fa-user-plus"></i></a>
-                <a href="cart.php" class="cart-count" title="Cart">
-                    <i class="fas fa-shopping-cart"></i>
-                    <span id="cart-counter">0</span>
-                </a>
             <?php endif; ?>
         </div>
     </header>
@@ -1200,7 +1298,7 @@ function isInWishlist($db, $user_id, $product_id) {
                                                 <input type="hidden" name="order_action" value="cancel">
                                                 <button type="submit" class="btn btn-danger" style="padding: 5px 10px;"><i class="fas fa-times"></i> Cancel</button>
                                             </form>
-                                        <?php elseif ($order['status'] === 'delivered'): ?>
+                                        <?php elseif (canReturnOrder($order)): ?>
                                             <form method="POST" style="display: inline-block; margin-left: 5px;">
                                                 <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
                                                 <input type="hidden" name="order_action" value="return">
@@ -1280,12 +1378,15 @@ function isInWishlist($db, $user_id, $product_id) {
                                 <th>Items</th>
                                 <th>Total</th>
                                 <th>Status</th>
-                                <th>Action</th>
+                                <th>Details</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php foreach ($return_orders as $order): 
                                 $order_items = getOrderItems($db, $order['id']);
+                                $status_history = $db->prepare("SELECT * FROM order_status_history WHERE order_id = ? ORDER BY changed_at DESC");
+                                $status_history->execute([$order['id']]);
+                                $history = $status_history->fetchAll(PDO::FETCH_ASSOC);
                             ?>
                                 <tr>
                                     <td><?php echo $order['id']; ?></td>
@@ -1304,15 +1405,38 @@ function isInWishlist($db, $user_id, $product_id) {
                                             <?php 
                                             $status_map = [
                                                 'return_requested' => 'Return Requested',
-                                                'returned' => 'Returned',
-                                                'refunded' => 'Refunded'
+                                                'returned' => 'Returned - Pending Refund',
+                                                'refunded' => 'Refund Processed'
                                             ];
                                             echo $status_map[$order['status']] ?? ucfirst($order['status']); 
                                             ?>
                                         </span>
                                     </td>
                                     <td>
-                                        <a href="order_details.php?id=<?php echo $order['id']; ?>" class="btn"><i class="fas fa-eye"></i> View</a>
+                                        <button class="btn" onclick="document.getElementById('history-<?php echo $order['id']; ?>').style.display='block'">
+                                            <i class="fas fa-history"></i> View History
+                                        </button>
+                                    </td>
+                                </tr>
+                                <tr id="history-<?php echo $order['id']; ?>" style="display: none;">
+                                    <td colspan="6">
+                                        <div class="history-details">
+                                            <h4>Status History:</h4>
+                                            <ul>
+                                                <?php foreach ($history as $entry): ?>
+                                                    <li>
+                                                        <strong><?php echo ucfirst($entry['status']); ?></strong> - 
+                                                        <?php echo date('M d, Y h:i A', strtotime($entry['changed_at'])); ?>
+                                                        <?php if ($entry['notes']): ?>
+                                                            <br><em><?php echo htmlspecialchars($entry['notes']); ?></em>
+                                                        <?php endif; ?>
+                                                    </li>
+                                                <?php endforeach; ?>
+                                            </ul>
+                                            <button class="btn btn-outline" onclick="document.getElementById('history-<?php echo $order['id']; ?>').style.display='none'">
+                                                <i class="fas fa-times"></i> Close
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -1323,6 +1447,16 @@ function isInWishlist($db, $user_id, $product_id) {
                 <div style="margin-top: 30px;">
                     <h4><i class="fas fa-info-circle"></i> Return Policy</h4>
                     <p>Our return policy allows you to return items within 30 days of delivery for a full refund. Items must be in their original condition with all tags attached. Please contact our support team if you have any questions about returns.</p>
+                    
+                    <h5>How to Return an Item:</h5>
+                    <ol>
+                        <li>Click the "Return" button on your delivered order</li>
+                        <li>Wait for our team to approve your return request</li>
+                        <li>You'll receive a return shipping label via email</li>
+                        <li>Pack the items securely and attach the label</li>
+                        <li>Drop off the package at any courier location</li>
+                        <li>Once received, we'll process your refund within 3-5 business days</li>
+                    </ol>
                 </div>
             </div>
         </div>

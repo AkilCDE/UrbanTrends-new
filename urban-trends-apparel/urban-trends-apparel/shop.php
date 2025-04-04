@@ -92,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['error_message'] = "Error adding product to cart: " . $e->getMessage();
         }
         
-        header("Location: shop.php");
+        header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
         exit;
     }
     
@@ -113,38 +113,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } catch (PDOException $e) {
             $_SESSION['error_message'] = "Error processing your order: " . $e->getMessage();
-            header("Location: shop.php");
+            header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
             exit;
         }
     }
-}
 
-// Get products
-function getProducts($db, $category = null) {
-    if ($category) {
-        $stmt = $db->prepare("SELECT * FROM products WHERE category = ?");
-        $stmt->execute([$category]);
-    } else {
-        $stmt = $db->query("SELECT * FROM products");
+    // Handle Wishlist Actions
+    if (isset($_POST['wishlist_action'])) {
+        $product_id = $_POST['product_id'];
+        $action = $_POST['wishlist_action'];
+        
+        if ($action === 'add') {
+            try {
+                // Check if product is already in wishlist
+                $stmt = $db->prepare("SELECT COUNT(*) FROM wishlist WHERE user_id = ? AND product_id = ?");
+                $stmt->execute([$_SESSION['user_id'], $product_id]);
+                $exists = $stmt->fetchColumn();
+                
+                if (!$exists) {
+                    $stmt = $db->prepare("INSERT INTO wishlist (user_id, product_id) VALUES (?, ?)");
+                    $stmt->execute([$_SESSION['user_id'], $product_id]);
+                    $_SESSION['success_message'] = "Product added to wishlist!";
+                } else {
+                    $_SESSION['info_message'] = "Product is already in your wishlist";
+                }
+            } catch (PDOException $e) {
+                $_SESSION['error_message'] = "Error adding to wishlist: " . $e->getMessage();
+            }
+        } elseif ($action === 'remove') {
+            try {
+                $stmt = $db->prepare("DELETE FROM wishlist WHERE user_id = ? AND product_id = ?");
+                $stmt->execute([$_SESSION['user_id'], $product_id]);
+                $_SESSION['success_message'] = "Product removed from wishlist!";
+            } catch (PDOException $e) {
+                $_SESSION['error_message'] = "Error removing from wishlist: " . $e->getMessage();
+            }
+        }
+        
+        // Redirect back to the same page with category parameter if exists
+        $redirect_url = 'shop.php';
+        if (isset($_GET['category'])) {
+            $redirect_url .= '?category=' . $_GET['category'];
+        }
+        header("Location: $redirect_url");
+        exit;
     }
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// Check if product is in wishlist
-function isInWishlist($db, $user_id, $product_id) {
-    $stmt = $db->prepare("SELECT COUNT(*) FROM wishlist WHERE user_id = ? AND product_id = ?");
-    $stmt->execute([$user_id, $product_id]);
-    return $stmt->fetchColumn() > 0;
-}
-
+// Get products with category filtering
 $category = isset($_GET['category']) ? $_GET['category'] : null;
 
+// Map the category parameter to database values
+$category_mapping = [
+    'men' => 'men_tshirts',
+    'women' => 'women_tshirts',
+    'shoes' => 'shoes',
+    'accessories' => 'accessories'
+];
+
+$db_category = isset($category_mapping[$category]) ? $category_mapping[$category] : null;
+
 // Get products
-$query = $category 
-    ? "SELECT * FROM products WHERE category = ? ORDER BY created_at DESC"
-    : "SELECT * FROM products ORDER BY created_at DESC";
+$query = "SELECT * FROM products";
+$params = [];
+
+if ($db_category) {
+    $query .= " WHERE category = ?";
+    $params[] = $db_category;
+}
+
+$query .= " ORDER BY created_at DESC";
+
 $stmt = $db->prepare($query);
-$stmt->execute($category ? [$category] : []);
+$stmt->execute($params);
 $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get cart count
@@ -153,6 +194,13 @@ if ($auth->isLoggedIn()) {
     $stmt = $db->prepare("SELECT COUNT(*) FROM cart WHERE user_id = ?");
     $stmt->execute([$_SESSION['user_id']]);
     $cart_count = $stmt->fetchColumn();
+}
+
+// Check if product is in wishlist
+function isInWishlist($db, $user_id, $product_id) {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM wishlist WHERE user_id = ? AND product_id = ?");
+    $stmt->execute([$user_id, $product_id]);
+    return $stmt->fetchColumn() > 0;
 }
 ?>
 
@@ -176,6 +224,7 @@ if ($auth->isLoggedIn()) {
             --success-color: #4bb543;
             --error-color: #ff3333;
             --warning-color: #ffcc00;
+            --info-color: #007bff;
             --border-radius: 8px;
             --box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
             --transition: all 0.3s ease;
@@ -833,6 +882,32 @@ if ($auth->isLoggedIn()) {
             font-size: 0.9rem;
         }
 
+        /* Alert messages */
+        .alert {
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: var(--border-radius);
+            font-weight: 500;
+        }
+
+        .alert-success {
+            background-color: rgba(75, 181, 67, 0.2);
+            color: var(--success-color);
+            border: 1px solid var(--success-color);
+        }
+
+        .alert-error {
+            background-color: rgba(255, 51, 51, 0.2);
+            color: var(--error-color);
+            border: 1px solid var(--error-color);
+        }
+
+        .alert-info {
+            background-color: rgba(0, 123, 255, 0.2);
+            color: var(--info-color);
+            border: 1px solid var(--info-color);
+        }
+
         /* Responsive */
         @media (max-width: 992px) {
             .modal-product {
@@ -890,35 +965,16 @@ if ($auth->isLoggedIn()) {
                 flex-direction: column;
             }
         }
-
-        /* Alert messages */
-        .alert {
-            padding: 1rem;
-            margin: 1rem 0;
-            border-radius: var(--border-radius);
-            font-weight: 500;
-        }
-
-        .alert-success {
-            background-color: rgba(75, 181, 67, 0.2);
-            color: var(--success-color);
-            border: 1px solid var(--success-color);
-        }
-
-        .alert-error {
-            background-color: rgba(255, 51, 51, 0.2);
-            color: var(--error-color);
-            border: 1px solid var(--error-color);
-        }
     </style>
 </head>
 <body>
-    <header>
-        <div class="container">
-            <div class="logo">
-                <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
-            </div>
-            
+<header>
+    <div class="container">
+        <div class="logo">
+            <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
+        </div>
+        
+        <div style="display: flex; align-items: center;">
             <nav>
                 <ul>
                     <li><a href="index.php"><i class="fas fa-home"></i> Home</a></li>
@@ -928,29 +984,22 @@ if ($auth->isLoggedIn()) {
                 </ul>
             </nav>
             
-            <div class="user-actions">
+            <div class="user-actions" style="margin-left: auto;">
                 <?php if ($auth->isLoggedIn()): ?>
-                    <a href="profile.php" title="Profile"><i class="fas fa-user"></i></a>
                     <?php if ($auth->isAdmin()): ?>
                         <a href="admin/dashboard.php" title="Admin"><i class="fas fa-cog"></i></a>
                     <?php endif; ?>
-                    <a href="wishlist.php" title="Wishlist"><i class="fas fa-heart"></i></a>
-                    <a href="cart.php" class="cart-count" title="Cart">
-                        <i class="fas fa-shopping-cart"></i>
-                        <span id="cart-counter"><?php echo $cart_count; ?></span>
-                    </a>
-                    <a href="?logout=1" title="Logout"><i class="fas fa-sign-out-alt"></i></a>
-                <?php else: ?>
-                    <a href="login.php" title="Login"><i class="fas fa-sign-in-alt"></i></a>
+                    <a href="profile.php" title="Profile"><i class="fas fa-user"></i>   Profile</a>
+                    <a href="?logout=1" title="Logout"><i class="fas fa-sign-out-alt"></i>    logout</a>
+                      <?php else: ?>
+                    <a href="login.php" title="Login"><i class="fas fa-sign-in-alt"></i>Login first</a>
                     <a href="register.php" title="Register"><i class="fas fa-user-plus"></i></a>
-                    <a href="cart.php" class="cart-count" title="Cart">
-                        <i class="fas fa-shopping-cart"></i>
-                        <span id="cart-counter">0</span>
-                    </a>
+                   
                 <?php endif; ?>
             </div>
         </div>
-    </header>
+    </div>
+</header>
     
     <main class="container">
         <!-- Display success/error messages -->
@@ -966,9 +1015,29 @@ if ($auth->isLoggedIn()) {
             </div>
         <?php endif; ?>
 
+        <?php if (isset($_SESSION['info_message'])): ?>
+            <div class="alert alert-info">
+                <?php echo $_SESSION['info_message']; unset($_SESSION['info_message']); ?>
+            </div>
+        <?php endif; ?>
+
         <section class="shop-section">
             <div class="shop-header">
-                <h1>SHOP COLLECTION</h1>
+                <h1>
+                    <?php 
+                    if ($db_category) {
+                        switch($db_category) {
+                            case 'men_tshirts': echo "MEN'S FASHION"; break;
+                            case 'women_tshirts': echo "WOMEN'S FASHION"; break;
+                            case 'shoes': echo "FOOTWEAR"; break;
+                            case 'accessories': echo "ACCESSORIES"; break;
+                            default: echo "SHOP COLLECTION";
+                        }
+                    } else {
+                        echo "SHOP COLLECTION";
+                    }
+                    ?>
+                </h1>
             </div>
             
             <div class="search-filter-container">
@@ -982,10 +1051,11 @@ if ($auth->isLoggedIn()) {
             </div>
             
             <div class="categories">
-                <button class="category-btn <?php echo !$category ? 'active' : ''; ?>" data-category="all">All Products</button>
-                <button class="category-btn <?php echo $category === 'men_tshirts' ? 'active' : ''; ?>" data-category="men_tshirts">Men's T-Shirts</button>
-                <button class="category-btn <?php echo $category === 'men_pants' ? 'active' : ''; ?>" data-category="men_pants">Men's Pants</button>
-                <button class="category-btn <?php echo $category === 'shoes' ? 'active' : ''; ?>" data-category="shoes">Shoes</button>
+                <button class="category-btn <?php echo !$db_category ? 'active' : ''; ?>" data-category="all">All Products</button>
+                <button class="category-btn <?php echo $db_category === 'men_tshirts' ? 'active' : ''; ?>" data-category="men">Men's Fashion</button>
+                <button class="category-btn <?php echo $db_category === 'women_tshirts' ? 'active' : ''; ?>" data-category="women">Women's Fashion</button>
+                <button class="category-btn <?php echo $db_category === 'shoes' ? 'active' : ''; ?>" data-category="shoes">Footwear</button>
+                <button class="category-btn <?php echo $db_category === 'accessories' ? 'active' : ''; ?>" data-category="accessories">Accessories</button>
             </div>
             
             <div class="products-grid" id="productsContainer">
@@ -1013,8 +1083,9 @@ if ($auth->isLoggedIn()) {
                                         <i class="fas fa-cart-plus"></i> Add to Cart
                                     </button>
                                 </form>
-                                <form method="POST" action="wishlist_action.php" style="display: inline;">
+                                <form method="POST" style="display: inline;">
                                     <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                                    <input type="hidden" name="wishlist_action" value="<?php echo isInWishlist($db, $_SESSION['user_id'], $product['id']) ? 'remove' : 'add'; ?>">
                                     <button type="submit" class="wishlist-btn <?php echo isInWishlist($db, $_SESSION['user_id'], $product['id']) ? 'active' : ''; ?>">
                                         <i class="fas fa-heart"></i>
                                     </button>
@@ -1056,8 +1127,8 @@ if ($auth->isLoggedIn()) {
                     <ul>
                         <li><a href="index.php"><i class="fas fa-chevron-right"></i> Home</a></li>
                         <li><a href="shop.php"><i class="fas fa-chevron-right"></i> Shop</a></li>
-                        <li><a href="about.php"><i class="fas fa-chevron-right"></i> About Us</a></li>
-                        <li><a href="contact.php"><i class="fas fa-chevron-right"></i> Contact Us</a></li>
+                        <li><a href="about.php"><i class="fas fa-chevron-right"></i> About</a></li>
+                        <li><a href="contact.php"><i class="fas fa-chevron-right"></i> Contact</a></li>
                         <li><a href="faq.php"><i class="fas fa-chevron-right"></i> FAQ</a></li>
                     </ul>
                 </div>

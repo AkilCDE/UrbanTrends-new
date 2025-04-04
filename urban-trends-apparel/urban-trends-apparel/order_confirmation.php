@@ -14,6 +14,13 @@ try {
 
 // Start session
 session_start();
+
+// Check if user is logged in
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit;
+}
+
 // Check if order_id is provided
 if (!isset($_GET['order_id'])) {
     header("Location: shop.php");
@@ -22,6 +29,11 @@ if (!isset($_GET['order_id'])) {
 
 $order_id = $_GET['order_id'];
 $user_id = $_SESSION['user_id'];
+
+// Get user details
+$stmt = $db->prepare("SELECT firstname FROM users WHERE id = ?");
+$stmt->execute([$user_id]);
+$user = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // Get order details
 $stmt = $db->prepare("
@@ -163,7 +175,7 @@ $order_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <h1>Order Confirmed!</h1>
             
             <div class="confirmation-message">
-                <p>Thank you for your order, <?php echo htmlspecialchars($auth->getCurrentUser()['firstname']); ?>!</p>
+                <p>Thank you for your order, <?php echo htmlspecialchars($user['firstname']); ?>!</p>
                 <p>Your order #<?php echo $order_id; ?> has been received and is being processed.</p>
             </div>
             
