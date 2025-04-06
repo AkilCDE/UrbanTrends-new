@@ -1,5 +1,5 @@
 <?php
-// Database configuration and session start
+// Database configuration
 define('DB_HOST', 'localhost');
 define('DB_USER', 'root');
 define('DB_PASS', '');
@@ -38,15 +38,33 @@ class Auth {
     
     public function getCurrentUser() {
         if ($this->isLoggedIn()) {
-            return [
-                'id' => $_SESSION['user_id'],
-                'email' => $_SESSION['user_email'],
-                'firstname' => $_SESSION['user_firstname'],
-                'lastname' => $_SESSION['user_lastname'],
-                'address' => $_SESSION['user_address']
-            ];
+            $stmt = $this->db->prepare("SELECT * FROM users WHERE id = ?");
+            $stmt->execute([$_SESSION['user_id']]);
+            return $stmt->fetch(PDO::FETCH_ASSOC);
         }
         return null;
+    }
+    
+    public function getWalletBalance($user_id) {
+        $stmt = $this->db->prepare("SELECT balance FROM user_wallet WHERE user_id = ?");
+        $stmt->execute([$user_id]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $result ? $result['balance'] : 0;
+    }
+    
+    public function addToWallet($user_id, $amount) {
+        try {
+            $stmt = $this->db->prepare("
+                INSERT INTO user_wallet (user_id, balance) 
+                VALUES (?, ?)
+                ON DUPLICATE KEY UPDATE balance = balance + ?
+            ");
+            $stmt->execute([$user_id, $amount, $amount]);
+            return true;
+        } catch(PDOException $e) {
+            error_log("Wallet error: " . $e->getMessage());
+            throw new Exception("Failed to update wallet: " . $e->getMessage());
+        }
     }
 }
 
@@ -57,6 +75,8 @@ if (!$auth->isLoggedIn()) {
     header("Location: login.php");
     exit;
 }
+
+$user = $auth->getCurrentUser();
 
 // Handle logout
 if (isset($_GET['logout'])) {
@@ -84,68 +104,205 @@ foreach ($cart_items as $item) {
 $shipping = 50; // Flat rate shipping
 $total = $subtotal + $shipping;
 
+// Get user's wallet balance
+$wallet_balance = $auth->getWalletBalance($user_id);
+
+// Handle add funds to wallet
+if (isset($_POST['add_funds'])) {
+    $amount = floatval($_POST['fund_amount']);
+    if ($amount > 0) {
+        if ($auth->addToWallet($user_id, $amount)) {
+            $_SESSION['success_message'] = "Successfully added ₱" . number_format($amount, 2) . " to your wallet!";
+            header("Location: checkout.php");
+            exit;
+        } else {
+            $error = "Failed to add funds to wallet. Please try again.";
+        }
+    } else {
+        $error = "Please enter a valid amount to add to your wallet.";
+    }
+}
+
 // Handle checkout form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['checkout'])) {
     try {
+        // Validate all required fields
+        $required_fields = [
+            'fullname' => 'Full Name',
+            'email' => 'Email',
+            'shipping_address' => 'Shipping Address',
+            'phone' => 'Phone Number',
+            'payment_method' => 'Payment Method'
+        ];
+        
+        $missing_fields = [];
+        foreach ($required_fields as $field => $name) {
+            if (empty($_POST[$field])) {
+                $missing_fields[] = $name;
+            }
+        }
+        
+        if (!empty($missing_fields)) {
+            throw new Exception("Please fill in all required fields: " . implode(', ', $missing_fields));
+        }
+        
+        $payment_method = $_POST['payment_method'];
+        $transaction_id = null;
+        $payment_status = 'pending';
+        
+        // Validate payment method specific fields
+        switch ($payment_method) {
+            case 'gcash':
+                if (empty($_POST['gcash_number'])) {
+                    throw new Exception("Please provide your GCash number.");
+                }
+                $transaction_id = 'GC' . time() . rand(100, 999);
+                break;
+                
+            case 'paypal':
+                $transaction_id = 'PP' . time() . rand(100, 999);
+                break;
+                
+            case 'credit_card':
+                if (empty($_POST['card_number']) || empty($_POST['card_name']) || 
+                    empty($_POST['card_expiry']) || empty($_POST['card_cvv'])) {
+                    throw new Exception("Please provide complete credit card information.");
+                }
+                $transaction_id = 'CC' . time() . rand(100, 999);
+                break;
+                
+            case 'wallet':
+                if ($wallet_balance < $total) {
+                    throw new Exception("Insufficient funds in wallet. Please add more funds or choose another payment method.");
+                }
+                $payment_status = 'completed';
+                $transaction_id = 'WL' . time() . rand(100, 999);
+                break;
+                
+            case 'cod':
+                $payment_status = 'pending';
+                break;
+                
+            default:
+                throw new Exception("Invalid payment method selected.");
+        }
+        
+        // Start transaction
         $db->beginTransaction();
         
-        // Create order
-        $stmt = $db->prepare("
-            INSERT INTO orders (user_id, total_amount, shipping_address, status) 
-            VALUES (?, ?, ?, 'processing')
-        ");
-        $stmt->execute([
-            $user_id,
-            $total,
-            $_POST['shipping_address']
-        ]);
-        $order_id = $db->lastInsertId();
-        
-        // Add order items
-        foreach ($cart_items as $item) {
+        try {
+            // 1. Create order
             $stmt = $db->prepare("
-                INSERT INTO order_items (order_id, product_id, quantity, price) 
-                VALUES (?, ?, ?, ?)
+                INSERT INTO orders (user_id, total_amount, shipping_address, status) 
+                VALUES (?, ?, ?, 'pending')
+            ");
+            $stmt->execute([
+                $user_id,
+                $total,
+                $_POST['shipping_address']
+            ]);
+            $order_id = $db->lastInsertId();
+            
+            // 2. Add order items
+            foreach ($cart_items as $item) {
+                $stmt = $db->prepare("
+                    INSERT INTO order_items (order_id, product_id, quantity, price) 
+                    VALUES (?, ?, ?, ?)
+                ");
+                $stmt->execute([
+                    $order_id,
+                    $item['product_id'],
+                    $item['quantity'],
+                    $item['price']
+                ]);
+                
+                // 3. Update product stock
+                $stmt = $db->prepare("
+                    UPDATE products SET stock = stock - ? WHERE id = ?
+                ");
+                $stmt->execute([$item['quantity'], $item['product_id']]);
+            }
+            
+            // 4. Create payment record
+            $stmt = $db->prepare("
+                INSERT INTO payments (order_id, amount, payment_method, transaction_id, status) 
+                VALUES (?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $order_id,
-                $item['product_id'],
-                $item['quantity'],
-                $item['price']
+                $total,
+                $payment_method,
+                $transaction_id,
+                $payment_status
             ]);
             
-            // Update product stock
+            // 5. Add delivery schedule if provided
+            if (!empty($_POST['delivery_date'])) {
+                $stmt = $db->prepare("
+                    INSERT INTO delivery_schedules 
+                    (order_id, preferred_date, preferred_time_slot, pickup_option, pickup_location) 
+                    VALUES (?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([
+                    $order_id,
+                    $_POST['delivery_date'],
+                    $_POST['time_slot'],
+                    isset($_POST['pickup_option']) ? 1 : 0,
+                    $_POST['pickup_location'] ?? null
+                ]);
+            }
+            
+            // 6. If payment is wallet, deduct from wallet
+            if ($payment_method === 'wallet') {
+                $stmt = $db->prepare("
+                    UPDATE user_wallet SET balance = balance - ? 
+                    WHERE user_id = ? AND balance >= ?
+                ");
+                $stmt->execute([$total, $user_id, $total]);
+                
+                if ($stmt->rowCount() === 0) {
+                    throw new Exception("Insufficient wallet balance.");
+                }
+            }
+            
+            // 7. Clear cart
+            $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ?");
+            $stmt->execute([$user_id]);
+            
+            // 8. Add initial order status
             $stmt = $db->prepare("
-                UPDATE products SET stock = stock - ? WHERE id = ?
+                INSERT INTO order_status_history (order_id, status, notes) 
+                VALUES (?, ?, ?)
             ");
-            $stmt->execute([$item['quantity'], $item['product_id']]);
+            $stmt->execute([
+                $order_id,
+                'pending',
+                'Order created successfully'
+            ]);
+            
+            // Commit transaction
+            $db->commit();
+            
+            // Redirect to confirmation
+            header("Location: order_confirmation.php?order_id=" . $order_id);
+            exit;
+            
+        } catch (Exception $e) {
+            $db->rollBack();
+            throw $e;
         }
         
-        // Create payment record
-        $stmt = $db->prepare("
-            INSERT INTO payments (order_id, amount, payment_method, status) 
-            VALUES (?, ?, ?, 'pending')
-        ");
-        $stmt->execute([
-            $order_id,
-            $total,
-            $_POST['payment_method']
-        ]);
-        
-        // Clear cart
-        $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ?");
-        $stmt->execute([$user_id]);
-        
-        $db->commit();
-        
-        // Redirect to order confirmation
-        header("Location: order_confirmation.php?order_id=" . $order_id);
-        exit;
-        
     } catch (Exception $e) {
-        $db->rollBack();
         $error = "Checkout failed: " . $e->getMessage();
     }
+}
+
+// Get cart count
+$cart_count = 0;
+if ($auth->isLoggedIn()) {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM cart WHERE user_id = ?");
+    $stmt->execute([$_SESSION['user_id']]);
+    $cart_count = $stmt->fetchColumn();
 }
 ?>
 
@@ -205,6 +362,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             width: 90%;
             max-width: 1200px;
             margin: 0 auto;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 28rem;
         }
 
         .logo {
@@ -308,6 +471,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: bold;
         }
 
+        /* Alert Styles */
+        .alert {
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            border-radius: var(--border-radius);
+        }
+        
+        .alert-danger {
+            background-color: rgba(255, 51, 51, 0.2);
+            border: 1px solid var(--error-color);
+            color: var(--error-color);
+        }
+        
+        .alert-success {
+            background-color: rgba(75, 181, 67, 0.2);
+            border: 1px solid var(--success-color);
+            color: var(--success-color);
+        }
+        
+        .alert-info {
+            background-color: rgba(0, 123, 255, 0.2);
+            border: 1px solid #007bff;
+            color: #007bff;
+        }
+
         /* Checkout specific styles */
         .checkout-container {
             display: grid;
@@ -356,6 +544,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.2);
         }
         
+        /* Payment Methods */
         .payment-methods {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -391,6 +580,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-size: 1.5rem;
         }
         
+        /* Wallet Section */
+        .wallet-section {
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 1.5rem;
+        }
+        
+        .wallet-balance {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+        }
+        
+        .wallet-balance span {
+            color: var(--accent-color);
+            font-weight: bold;
+        }
+        
+        .wallet-form {
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .wallet-form input {
+            flex: 1;
+        }
+        
+        /* Order Summary */
         .order-summary-item {
             display: flex;
             justify-content: space-between;
@@ -422,6 +639,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .checkout-btn:hover {
             background-color: #ff5252;
             transform: translateY(-2px);
+        }
+        
+        .checkout-btn:disabled {
+            background-color: #666;
+            cursor: not-allowed;
+            transform: none;
         }
         
         .cart-item {
@@ -545,16 +768,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .payment-methods {
                 grid-template-columns: 1fr;
             }
+            
+            .header-right {
+                flex-direction: column;
+                gap: 1rem;
+            }
+            
+            nav ul {
+                gap: 1rem;
+            }
+            
+            .wallet-form {
+                flex-direction: column;
+            }
         }
     </style>
 </head>
 <body>
-    <header>
-        <div class="container">
-            <div class="logo">
-                <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
-            </div>
-            
+<header>
+    <div class="container">
+        <div class="logo">
+            <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
+        </div>
+        
+        <div class="header-right"> 
             <nav>
                 <ul>
                     <li><a href="index.php"><i class="fas fa-home"></i> Home</a></li>
@@ -563,7 +800,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <li><a href="contact.php"><i class="fas fa-envelope"></i> Contact</a></li>
                 </ul>
             </nav>
-            
+           
             <div class="user-actions">
                 <?php if ($auth->isLoggedIn()): ?>
                     <a href="profile.php" title="Profile"><i class="fas fa-user"></i></a>
@@ -571,63 +808,104 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <a href="admin/dashboard.php" title="Admin"><i class="fas fa-cog"></i></a>
                     <?php endif; ?>
                     <a href="wishlist.php" title="Wishlist"><i class="fas fa-heart"></i></a>
-                    <a href="cart.php" class="cart-count" title="Cart">
+                    <a href="cart.php" title="Cart" class="cart-count">
                         <i class="fas fa-shopping-cart"></i>
-                        <span id="cart-counter"><?php echo count($cart_items); ?></span>
+                        <span><?php echo $cart_count; ?></span>
                     </a>
                     <a href="?logout=1" title="Logout"><i class="fas fa-sign-out-alt"></i></a>
                 <?php else: ?>
                     <a href="login.php" title="Login"><i class="fas fa-sign-in-alt"></i></a>
                     <a href="register.php" title="Register"><i class="fas fa-user-plus"></i></a>
-                    <a href="cart.php" class="cart-count" title="Cart">
-                        <i class="fas fa-shopping-cart"></i>
-                        <span id="cart-counter">0</span>
-                    </a>
+                    
                 <?php endif; ?>
             </div>
         </div>
-    </header>
+    </div>
+</header>
     
-    <main class="container">
-        <h1 style="margin: 2rem 0 1rem;">Checkout</h1>
-        
-        <?php if (!empty($error)): ?>
-            <div class="alert alert-danger"><?php echo $error; ?></div>
-        <?php endif; ?>
-        
-        <form method="POST" class="checkout-container">
+<main class="container">
+    <h1 style="margin: 2rem 0 1rem;">Checkout</h1>
+    
+    <?php if (!empty($error)): ?>
+        <div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> <?php echo $error; ?></div>
+    <?php endif; ?>
+    
+    <?php if (isset($_SESSION['success_message'])): ?>
+        <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo $_SESSION['success_message']; unset($_SESSION['success_message']); ?></div>
+    <?php endif; ?>
+    
+    <?php if (empty($cart_items)): ?>
+        <div class="alert alert-info">
+            <i class="fas fa-info-circle"></i> Your cart is empty. <a href="shop.php">Continue shopping</a>
+        </div>
+    <?php else: ?>
+        <form method="POST" class="checkout-container" id="checkoutForm">
             <div class="checkout-section">
                 <h2>Shipping Information</h2>
                 
                 <div class="form-group">
                     <label for="fullname">Full Name</label>
                     <input type="text" id="fullname" name="fullname" class="form-control" required 
-                           value="<?php echo htmlspecialchars($auth->getCurrentUser()['firstname'] . ' ' . $auth->getCurrentUser()['lastname']); ?>">
+                           value="<?php echo htmlspecialchars($user['firstname'] . ' ' . $user['lastname']); ?>">
                 </div>
                 
                 <div class="form-group">
                     <label for="email">Email</label>
                     <input type="email" id="email" name="email" class="form-control" required 
-                           value="<?php echo htmlspecialchars($auth->getCurrentUser()['email']); ?>">
+                           value="<?php echo htmlspecialchars($user['email']); ?>">
                 </div>
                 
                 <div class="form-group">
                     <label for="shipping_address">Shipping Address</label>
                     <textarea id="shipping_address" name="shipping_address" class="form-control" rows="4" required><?php 
-                        echo htmlspecialchars($auth->getCurrentUser()['address']); 
+                        echo htmlspecialchars($user['address']); 
                     ?></textarea>
                 </div>
                 
                 <div class="form-group">
                     <label for="phone">Phone Number</label>
-                    <input type="tel" id="phone" name="phone" class="form-control" required>
+                    <input type="tel" id="phone" name="phone" class="form-control" required
+                           value="<?php echo htmlspecialchars($user['phone'] ?? ''); ?>">
+                </div>
+                
+                <h2>Delivery Options</h2>
+                
+                <div class="form-group">
+                    <label for="delivery_date">Preferred Delivery Date</label>
+                    <input type="date" id="delivery_date" name="delivery_date" class="form-control" 
+                           min="<?php echo date('Y-m-d', strtotime('+2 days')); ?>">
+                </div>
+                
+                <div class="form-group">
+                    <label for="time_slot">Preferred Time Slot</label>
+                    <select id="time_slot" name="time_slot" class="form-control">
+                        <option value="morning">Morning (9AM - 12PM)</option>
+                        <option value="afternoon">Afternoon (1PM - 5PM)</option>
+                        <option value="evening">Evening (6PM - 9PM)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="pickup_option" id="pickup_option"> 
+                        I prefer to pick up in-store
+                    </label>
+                </div>
+                
+                <div class="form-group" id="pickup_location_group" style="display: none;">
+                    <label for="pickup_location">Pickup Location</label>
+                    <select id="pickup_location" name="pickup_location" class="form-control">
+                        <option value="Main Store">Main Store - 123 Urban Street</option>
+                        <option value="Mall Branch">Mall Branch - Fashion District</option>
+                        <option value="Downtown Branch">Downtown Branch - City Center</option>
+                    </select>
                 </div>
                 
                 <h2>Payment Method</h2>
                 
                 <div class="payment-methods">
                     <label class="payment-method">
-                        <input type="radio" name="payment_method" value="cod" required checked>
+                        <input type="radio" name="payment_method" value="cod" required>
                         <i class="fas fa-money-bill-wave"></i>
                         <span>Cash on Delivery</span>
                     </label>
@@ -649,7 +927,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <i class="far fa-credit-card"></i>
                         <span>Credit Card</span>
                     </label>
+                    
+                    <?php if ($wallet_balance > 0): ?>
+                    <label class="payment-method">
+                        <input type="radio" name="payment_method" value="wallet">
+                        <i class="fas fa-wallet"></i>
+                        <span>Wallet (₱<?php echo number_format($wallet_balance, 2); ?>)</span>
+                    </label>
+                    <?php endif; ?>
                 </div>
+                
+                <!-- Wallet section -->
+                <?php if ($wallet_balance < $total): ?>
+                <div class="wallet-section">
+                    <div class="wallet-balance">
+                        Your wallet balance: <span>₱<?php echo number_format($wallet_balance, 2); ?></span>
+                    </div>
+                    <p>Add funds to your wallet to complete your purchase:</p>
+                    <form method="POST" class="wallet-form">
+                        <input type="number" name="fund_amount" class="form-control" 
+                               placeholder="Amount to add" min="1" step="0.01"
+                               value="<?php echo max(1, ceil($total - $wallet_balance)); ?>">
+                        <button type="submit" name="add_funds" class="btn">
+                            <i class="fas fa-plus-circle"></i> Add Funds
+                        </button>
+                    </form>
+                </div>
+                <?php endif; ?>
                 
                 <!-- Payment details (shown based on selection) -->
                 <div id="payment-details"></div>
@@ -685,123 +989,209 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <span>₱<?php echo number_format($total, 2); ?></span>
                 </div>
                 
-                <button type="submit" class="checkout-btn">Complete Order</button>
+                <button type="submit" name="checkout" class="checkout-btn" id="completeOrderBtn">
+                    <i class="fas fa-credit-card"></i> Complete Order
+                </button>
+                
+                <a href="cart.php" class="btn btn-outline" style="width: 100%; margin-top: 1rem;">
+                    <i class="fas fa-arrow-left"></i> Back to Cart
+                </a>
             </div>
         </form>
-    </main>
-    
-    <footer>
-        <div class="container">
-            <div class="footer-content">
-                <div class="footer-column">
-                    <h3>About Urban Trends</h3>
-                    <p>Your premier destination for the latest in urban fashion trends. We offer high-quality apparel and accessories for the modern urban lifestyle.</p>
-                    <div class="social-links">
-                        <a href="#"><i class="fab fa-facebook-f"></i></a>
-                        <a href="#"><i class="fab fa-twitter"></i></a>
-                        <a href="#"><i class="fab fa-instagram"></i></a>
-                        <a href="#"><i class="fab fa-pinterest"></i></a>
-                    </div>
-                </div>
-                
-                <div class="footer-column">
-                    <h3>Quick Links</h3>
-                    <ul>
-                        <li><a href="index.php"><i class="fas fa-chevron-right"></i> Home</a></li>
-                        <li><a href="shop.php"><i class="fas fa-chevron-right"></i> Shop</a></li>
-                        <li><a href="about.php"><i class="fas fa-chevron-right"></i> About Us</a></li>
-                        <li><a href="contact.php"><i class="fas fa-chevron-right"></i> Contact Us</a></li>
-                        <li><a href="faq.php"><i class="fas fa-chevron-right"></i> FAQ</a></li>
-                    </ul>
-                </div>
-                
-                <div class="footer-column">
-                    <h3>Customer Service</h3>
-                    <ul>
-                        <li><a href="profile.php"><i class="fas fa-chevron-right"></i> My Account</a></li>
-                        <li><a href="orders.php"><i class="fas fa-chevron-right"></i> Order Tracking</a></li>
-                        <li><a href="returns.php"><i class="fas fa-chevron-right"></i> Returns & Refunds</a></li>
-                        <li><a href="privacy.php"><i class="fas fa-chevron-right"></i> Privacy Policy</a></li>
-                        <li><a href="terms.php"><i class="fas fa-chevron-right"></i> Terms & Conditions</a></li>
-                    </ul>
-                </div>
-                
-                <div class="footer-column">
-                    <h3>Contact Info</h3>
-                    <ul>
-                        <li><i class="fas fa-map-marker-alt"></i> 123 Urban Street, Fashion District, City</li>
-                        <li><i class="fas fa-phone"></i> +1 (123) 456-7890</li>
-                        <li><i class="fas fa-envelope"></i> info@urbantrends.com</li>
-                        <li><i class="fas fa-clock"></i> Mon-Fri: 9AM - 6PM</li>
-                    </ul>
+    <?php endif; ?>
+</main>
+
+<footer>
+    <div class="container">
+        <div class="footer-content">
+            <div class="footer-column">
+                <h3>About Urban Trends</h3>
+                <p>Your premier destination for the latest in urban fashion trends. We offer high-quality apparel and accessories for the modern urban lifestyle.</p>
+                <div class="social-links">
+                    <a href="#"><i class="fab fa-facebook-f"></i></a>
+                    <a href="#"><i class="fab fa-twitter"></i></a>
+                    <a href="#"><i class="fab fa-instagram"></i></a>
+                    <a href="#"><i class="fab fa-pinterest"></i></a>
                 </div>
             </div>
             
-            <div class="copyright">
-                &copy; <?php echo date('Y'); ?> Urban Trends Apparel. All rights reserved.
+            <div class="footer-column">
+                <h3>Quick Links</h3>
+                <ul>
+                    <li><a href="index.php"><i class="fas fa-chevron-right"></i> Home</a></li>
+                    <li><a href="shop.php"><i class="fas fa-chevron-right"></i> Shop</a></li>
+                    <li><a href="about.php"><i class="fas fa-chevron-right"></i> About Us</a></li>
+                    <li><a href="contact.php"><i class="fas fa-chevron-right"></i> Contact Us</a></li>
+                    <li><a href="faq.php"><i class="fas fa-chevron-right"></i> FAQ</a></li>
+                </ul>
+            </div>
+            
+            <div class="footer-column">
+                <h3>Customer Service</h3>
+                <ul>
+                    <li><a href="profile.php"><i class="fas fa-chevron-right"></i> My Account</a></li>
+                    <li><a href="orders.php"><i class="fas fa-chevron-right"></i> Order Tracking</a></li>
+                    <li><a href="returns.php"><i class="fas fa-chevron-right"></i> Returns & Refunds</a></li>
+                    <li><a href="privacy.php"><i class="fas fa-chevron-right"></i> Privacy Policy</a></li>
+                    <li><a href="terms.php"><i class="fas fa-chevron-right"></i> Terms & Conditions</a></li>
+                </ul>
+            </div>
+            
+            <div class="footer-column">
+                <h3>Contact Info</h3>
+                <ul>
+                    <li><i class="fas fa-map-marker-alt"></i> 123 Urban Street, Fashion District, City</li>
+                    <li><i class="fas fa-phone"></i> +1 (123) 456-7890</li>
+                    <li><i class="fas fa-envelope"></i> info@urbantrends.com</li>
+                    <li><i class="fas fa-clock"></i> Mon-Fri: 9AM - 6PM</li>
+                </ul>
             </div>
         </div>
-    </footer>
+        
+        <div class="copyright">
+            &copy; <?php echo date('Y'); ?> Urban Trends Apparel. All rights reserved.
+        </div>
+    </div>
+</footer>
 
-    <script>
-        // Show payment details based on selection
-        document.querySelectorAll('input[name="payment_method"]').forEach(radio => {
-            radio.addEventListener('change', function() {
-                const paymentDetails = document.getElementById('payment-details');
-                let html = '';
-                
-                switch(this.value) {
-                    case 'gcash':
-                        html = `
-                            <div class="form-group">
-                                <label for="gcash_number">GCash Number</label>
-                                <input type="text" id="gcash_number" name="gcash_number" class="form-control" placeholder="09XXXXXXXXX">
+<script>
+    // Show/hide pickup location based on checkbox
+    document.getElementById('pickup_option').addEventListener('change', function() {
+        const pickupLocationGroup = document.getElementById('pickup_location_group');
+        pickupLocationGroup.style.display = this.checked ? 'block' : 'none';
+    });
+
+    // Set minimum delivery date (2 days from now)
+    document.getElementById('delivery_date').min = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Show payment details based on selection
+    document.querySelectorAll('input[name="payment_method"]').forEach(radio => {
+        radio.addEventListener('change', function() {
+            const paymentDetails = document.getElementById('payment-details');
+            let html = '';
+            
+            switch(this.value) {
+                case 'gcash':
+                    html = `
+                        <div class="form-group">
+                            <label for="gcash_number">GCash Number</label>
+                            <input type="text" id="gcash_number" name="gcash_number" class="form-control" placeholder="09XXXXXXXXX" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="gcash_name">Account Name</label>
+                            <input type="text" id="gcash_name" name="gcash_name" class="form-control" required>
+                        </div>
+                    `;
+                    break;
+                    
+                case 'paypal':
+                    html = `
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i> You will be redirected to PayPal to complete your payment.
+                        </div>
+                    `;
+                    break;
+                    
+                case 'credit_card':
+                    html = `
+                        <div class="form-group">
+                            <label for="card_number">Card Number</label>
+                            <input type="text" id="card_number" name="card_number" class="form-control" placeholder="1234 5678 9012 3456" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="card_name">Name on Card</label>
+                            <input type="text" id="card_name" name="card_name" class="form-control" required>
+                        </div>
+                        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                            <div>
+                                <label for="card_expiry">Expiry Date</label>
+                                <input type="text" id="card_expiry" name="card_expiry" class="form-control" placeholder="MM/YY" required>
                             </div>
-                            <div class="form-group">
-                                <label for="gcash_name">Account Name</label>
-                                <input type="text" id="gcash_name" name="gcash_name" class="form-control">
+                            <div>
+                                <label for="card_cvv">CVV</label>
+                                <input type="text" id="card_cvv" name="card_cvv" class="form-control" placeholder="123" required>
                             </div>
-                        `;
-                        break;
-                        
-                    case 'paypal':
-                        html = `
-                            <div class="alert alert-info">
-                                You will be redirected to PayPal to complete your payment.
-                            </div>
-                        `;
-                        break;
-                        
-                    case 'credit_card':
-                        html = `
-                            <div class="form-group">
-                                <label for="card_number">Card Number</label>
-                                <input type="text" id="card_number" name="card_number" class="form-control" placeholder="1234 5678 9012 3456">
-                            </div>
-                            <div class="form-group">
-                                <label for="card_name">Name on Card</label>
-                                <input type="text" id="card_name" name="card_name" class="form-control">
-                            </div>
-                            <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                                <div>
-                                    <label for="card_expiry">Expiry Date</label>
-                                    <input type="text" id="card_expiry" name="card_expiry" class="form-control" placeholder="MM/YY">
-                                </div>
-                                <div>
-                                    <label for="card_cvv">CVV</label>
-                                    <input type="text" id="card_cvv" name="card_cvv" class="form-control" placeholder="123">
-                                </div>
-                            </div>
-                        `;
-                        break;
-                        
-                    default:
-                        html = '';
-                }
-                
-                paymentDetails.innerHTML = html;
-            });
+                        </div>
+                    `;
+                    break;
+                    
+                default:
+                    html = '';
+            }
+            
+            paymentDetails.innerHTML = html;
         });
-    </script>
+    });
+
+    // Form validation before submission
+    document.getElementById('checkoutForm').addEventListener('submit', function(e) {
+        if (e.submitter && e.submitter.name === 'checkout') {
+            // Validate required fields
+            const requiredFields = [
+                'fullname', 'email', 'shipping_address', 'phone', 'payment_method'
+            ];
+            
+            let isValid = true;
+            let missingFields = [];
+            
+            requiredFields.forEach(field => {
+                const element = document.querySelector(`[name="${field}"]`);
+                if (!element || !element.value.trim()) {
+                    isValid = false;
+                    missingFields.push(field.replace('_', ' '));
+                    element.classList.add('error');
+                } else {
+                    element.classList.remove('error');
+                }
+            });
+            
+            // Validate payment method specific fields
+            const paymentMethod = document.querySelector('input[name="payment_method"]:checked');
+            if (!paymentMethod) {
+                isValid = false;
+                alert('Please select a payment method.');
+                return false;
+            }
+            
+            switch(paymentMethod.value) {
+                case 'gcash':
+                    if (!document.getElementById('gcash_number') || !document.getElementById('gcash_number').value.trim() ||
+                        !document.getElementById('gcash_name') || !document.getElementById('gcash_name').value.trim()) {
+                        isValid = false;
+                        alert('Please provide your GCash number and account name.');
+                    }
+                    break;
+                    
+                case 'credit_card':
+                    if (!document.getElementById('card_number') || !document.getElementById('card_number').value.trim() ||
+                        !document.getElementById('card_name') || !document.getElementById('card_name').value.trim() ||
+                        !document.getElementById('card_expiry') || !document.getElementById('card_expiry').value.trim() ||
+                        !document.getElementById('card_cvv') || !document.getElementById('card_cvv').value.trim()) {
+                        isValid = false;
+                        alert('Please provide complete credit card information.');
+                    }
+                    break;
+            }
+            
+            if (!isValid) {
+                e.preventDefault();
+                if (missingFields.length > 0) {
+                    alert('Please fill in all required fields: ' + missingFields.join(', '));
+                }
+                return false;
+            }
+        }
+    });
+
+    // Highlight selected payment method
+    document.querySelectorAll('.payment-method').forEach(method => {
+        method.addEventListener('click', function() {
+            document.querySelectorAll('.payment-method').forEach(m => {
+                m.classList.remove('selected');
+            });
+            this.classList.add('selected');
+        });
+    });
+</script>
 </body>
 </html>

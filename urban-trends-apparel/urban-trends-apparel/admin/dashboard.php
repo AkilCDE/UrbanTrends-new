@@ -193,10 +193,18 @@ $lowStockProducts = $db->query("SELECT * FROM products WHERE stock < 10 ORDER BY
 // Get recent orders
 $recentOrders = $db->query("SELECT o.*, u.email FROM orders o JOIN users u ON o.user_id = u.id ORDER BY order_date DESC LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
 
-// Get return/refund requests
+// Get return/refund requests with more details
 $returnRequests = $db->query("
     SELECT o.id as order_id, o.status, o.order_date, o.total_amount, 
-           u.id as user_id, u.email, u.firstname, u.lastname
+           u.id as user_id, u.email, u.firstname, u.lastname,
+           (SELECT GROUP_CONCAT(oi.product_id) FROM order_items oi WHERE oi.order_id = o.id) as product_ids,
+           (SELECT GROUP_CONCAT(p.name SEPARATOR ', ') 
+            FROM order_items oi 
+            JOIN products p ON oi.product_id = p.id 
+            WHERE oi.order_id = o.id) as product_names,
+           (SELECT notes FROM order_status_history 
+            WHERE order_id = o.id AND status = 'return_requested' 
+            ORDER BY changed_at DESC LIMIT 1) as return_reason
     FROM orders o
     JOIN users u ON o.user_id = u.id
     WHERE o.status IN ('return_requested', 'returned', 'refunded')
@@ -544,6 +552,21 @@ if (isset($_GET['logout'])) {
             color: #721C24;
         }
         
+        .status.return_requested {
+            background-color: #FFF3CD;
+            color: #856404;
+        }
+        
+        .status.returned {
+            background-color: #E2E3E5;
+            color: #383D41;
+        }
+        
+        .status.refunded {
+            background-color: #D4EDDA;
+            color: #155724;
+        }
+        
         .status.low-stock {
             background-color: #FFE3E3;
             color: #C92A2A;
@@ -590,6 +613,24 @@ if (isset($_GET['logout'])) {
         
         .btn-success:hover {
             background-color: #3aa8d1;
+        }
+        
+        .btn-warning {
+            background-color: var(--warning-color);
+            color: white;
+        }
+        
+        .btn-warning:hover {
+            background-color: #e0871a;
+        }
+        
+        .btn-info {
+            background-color: #17a2b8;
+            color: white;
+        }
+        
+        .btn-info:hover {
+            background-color: #138496;
         }
         
         /* Forms */
@@ -777,6 +818,37 @@ if (isset($_GET['logout'])) {
             gap: 10px;
         }
         
+        /* Return Details Styles */
+        .return-details {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .return-details h4 {
+            margin-bottom: 10px;
+            color: var(--dark-color);
+        }
+        
+        .return-details p {
+            margin-bottom: 5px;
+        }
+        
+        .return-products {
+            margin-top: 10px;
+        }
+        
+        .return-products ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        
+        .return-products li {
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
         /* Responsive Styles */
         @media (max-width: 768px) {
             .admin-sidebar {
@@ -864,7 +936,6 @@ if (isset($_GET['logout'])) {
             <li><a href="orders.php"><i class="fas fa-shopping-bag"></i> <span>Orders</span></a></li>
             <li><a href="customers.php"><i class="fas fa-users"></i> <span>Customers</span></a></li>
             <li><a href="reports.php"><i class="fas fa-chart-bar"></i> <span>Reports</span></a></li>
-            
         </ul>
     </div>
 
@@ -880,7 +951,6 @@ if (isset($_GET['logout'])) {
 
         <!-- Tabs -->
         <div class="tabs">
-            
             <div class="tab active" onclick="switchTab('dashboard')">Dashboard</div>
             <div class="tab" onclick="switchTab('inventory')">Inventory Management</div>
             <div class="tab" onclick="switchTab('reports')">Reports</div>
@@ -893,8 +963,8 @@ if (isset($_GET['logout'])) {
             <!-- Stats Cards -->
             <div class="stats-grid">
                 <div class="stat-card">
-                    <h3><i class="fas fa-dollar-sign"></i> Total Revenue</h3>
-                    <p>$<?php echo number_format($totalRevenue ?: 0, 2); ?></p>
+                    <h3><i class="fas fa-peso-sign"></i> Total Revenue</h3>
+                    <p>₱<?php echo number_format($totalRevenue ?: 0, 2); ?></p>
                     <div class="stat-change">
                         <i class="fas fa-arrow-up"></i> 12% from last month
                     </div>
@@ -942,14 +1012,14 @@ if (isset($_GET['logout'])) {
                                     <td>#<?php echo $order['id']; ?></td>
                                     <td><?php echo $order['email']; ?></td>
                                     <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
-                                    <td>$<?php echo number_format($order['total_amount'], 2); ?></td>
+                                    <td>₱<?php echo number_format($order['total_amount'], 2); ?></td>
                                     <td>
                                         <span class="status <?php echo $order['status']; ?>">
                                             <?php echo ucfirst($order['status']); ?>
                                         </span>
                                     </td>
                                     <td>
-                                        <a href="order_details.php?id=<?php echo $order['id']; ?>" class="btn btn-primary">
+                                        <a href="orders.php?id=<?php echo $order['id']; ?>" class="btn btn-primary">
                                             <i class="fas fa-eye"></i> View
                                         </a>
                                         <?php if ($order['status'] == 'processing'): ?>
@@ -1034,7 +1104,7 @@ if (isset($_GET['logout'])) {
                                 </td>
                                 <td><?php echo $product['name']; ?></td>
                                 <td><?php echo ucfirst(str_replace('_', ' ', $product['category'])); ?></td>
-                                <td>$<?php echo number_format($product['price'], 2); ?></td>
+                                <td>₱<?php echo number_format($product['price'], 2); ?></td>
                                 <td>
                                     <span class="status <?php 
                                         echo $product['stock'] < 5 ? 'low-stock' : 
@@ -1138,7 +1208,7 @@ if (isset($_GET['logout'])) {
                     </div>
                     
                     <div class="form-group">
-                        <label for="price">Price</label>
+                        <label for="price">Price (₱)</label>
                         <input type="number" id="price" name="price" step="0.01" min="0" class="form-control" required>
                     </div>
                     
@@ -1179,6 +1249,7 @@ if (isset($_GET['logout'])) {
             </div>
         </div>
 
+        <!-- Returns/Refunds Tab -->
         <div id="returns" class="tab-content">
             <div class="table-container">
                 <h3><i class="fas fa-exchange-alt"></i> Return & Refund Requests</h3>
@@ -1199,7 +1270,7 @@ if (isset($_GET['logout'])) {
                                 <td>#<?php echo $request['order_id']; ?></td>
                                 <td><?php echo $request['firstname'] . ' ' . $request['lastname']; ?><br><small><?php echo $request['email']; ?></small></td>
                                 <td><?php echo date('M d, Y', strtotime($request['order_date'])); ?></td>
-                                <td>$<?php echo number_format($request['total_amount'], 2); ?></td>
+                                <td>₱<?php echo number_format($request['total_amount'], 2); ?></td>
                                 <td>
                                     <span class="status <?php echo $request['status']; ?>">
                                         <?php echo ucfirst(str_replace('_', ' ', $request['status'])); ?>
@@ -1207,9 +1278,9 @@ if (isset($_GET['logout'])) {
                                 </td>
                                 <td>
                                     <div class="return-actions">
-                                        <a href="order_details.php?id=<?php echo $request['order_id']; ?>" class="btn btn-primary">
-                                            <i class="fas fa-eye"></i> View
-                                        </a>
+                                        <button type="button" class="btn btn-primary" onclick="showReturnDetails(<?php echo $request['order_id']; ?>, '<?php echo htmlspecialchars($request['product_names'], ENT_QUOTES); ?>', '<?php echo htmlspecialchars($request['return_reason'] ?? 'No reason provided', ENT_QUOTES); ?>')">
+                                            <i class="fas fa-eye"></i> Details
+                                        </button>
                                         <?php if ($request['status'] == 'return_requested'): ?>
                                             <button type="button" class="btn btn-success" onclick="showReturnModal(<?php echo $request['order_id']; ?>, 'returned')">
                                                 <i class="fas fa-check"></i> Approve Return
@@ -1370,6 +1441,32 @@ if (isset($_GET['logout'])) {
         </div>
     </div>
 
+    <!-- Return Details Modal -->
+    <div id="returnDetailsModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3><i class="fas fa-info-circle"></i> Return Request Details</h3>
+            </div>
+            <div class="modal-body">
+                <div class="return-details">
+                    <h4>Products to Return</h4>
+                    <div class="return-products">
+                        <ul id="returnProductsList"></ul>
+                    </div>
+                </div>
+                <div class="return-details">
+                    <h4>Return Reason</h4>
+                    <p id="returnReasonText"></p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="hideReturnDetailsModal()">
+                    <i class="fas fa-times"></i> Close
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Switch between tabs
         function switchTab(tabId) {
@@ -1391,7 +1488,6 @@ if (isset($_GET['logout'])) {
             document.getElementById('modalTitle').textContent = `Update Stock: ${productName}`;
             document.getElementById('stock_change').value = 0;
             document.getElementById('stockModal').style.display = 'flex';
-            
         }
         
         function closeStockModal() {
@@ -1444,8 +1540,8 @@ if (isset($_GET['logout'])) {
             document.body.style.overflow = '';
         }
         
-         // Return/Refund modal functions
-         function showReturnModal(orderId, newStatus) {
+        // Return/Refund modal functions
+        function showReturnModal(orderId, newStatus) {
             const modal = document.getElementById('returnModal');
             const title = document.getElementById('returnModalTitle');
             const statusInput = document.getElementById('return_new_status');
@@ -1484,15 +1580,45 @@ if (isset($_GET['logout'])) {
             document.body.style.overflow = '';
         }
         
+        // Return Details modal functions
+        function showReturnDetails(orderId, productNames, returnReason) {
+            const modal = document.getElementById('returnDetailsModal');
+            const productsList = document.getElementById('returnProductsList');
+            const reasonText = document.getElementById('returnReasonText');
+            
+            // Clear previous products
+            productsList.innerHTML = '';
+            
+            // Split product names and add to list
+            const products = productNames.split(', ');
+            products.forEach(product => {
+                const li = document.createElement('li');
+                li.textContent = product;
+                productsList.appendChild(li);
+            });
+            
+            // Set return reason
+            reasonText.textContent = returnReason || 'No reason provided';
+            
+            // Show modal
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function hideReturnDetailsModal() {
+            document.getElementById('returnDetailsModal').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+        
         // Close modals when clicking outside
         document.querySelectorAll('.modal-overlay').forEach(modal => {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    if (this.id === 'stockModal') hideStockModal();
                     if (this.id === 'shippingModal') hideShippingModal();
                     if (this.id === 'deliveryModal') hideDeliveryModal();
                     if (this.id === 'cancelModal') hideCancelModal();
                     if (this.id === 'returnModal') hideReturnModal();
+                    if (this.id === 'returnDetailsModal') hideReturnDetailsModal();
                 }
             });
         });
@@ -1507,8 +1633,8 @@ if (isset($_GET['logout'])) {
             }
         });
         
-         // Form validation for return/refund
-         document.getElementById('returnForm').addEventListener('submit', function(e) {
+        // Form validation for return/refund
+        document.getElementById('returnForm').addEventListener('submit', function(e) {
             const message = document.getElementById('return_message').value.trim();
             if (!message) {
                 e.preventDefault();
@@ -1516,6 +1642,7 @@ if (isset($_GET['logout'])) {
                 document.getElementById('return_message').focus();
             }
         });
+        
         // Success/error message handling
         document.addEventListener('DOMContentLoaded', function() {
             <?php if (isset($_SESSION['success_message'])): ?>
@@ -1531,11 +1658,11 @@ if (isset($_GET['logout'])) {
             // Close modals with Escape key
             document.addEventListener('keydown', function(e) {
                 if (e.key === 'Escape') {
-                    hideStockModal();
                     hideShippingModal();
                     hideDeliveryModal();
                     hideCancelModal();
                     hideReturnModal();
+                    hideReturnDetailsModal();
                 }
             });
         });
@@ -1568,7 +1695,7 @@ if (isset($_GET['logout'])) {
                             yAxisID: 'y'
                         },
                         {
-                            label: 'Revenue ($)',
+                            label: 'Revenue (₱)',
                             data: <?php echo json_encode(array_column(array_reverse($orderVolume), 'revenue')); ?>,
                             borderColor: '#4cc9f0',
                             backgroundColor: 'rgba(76, 201, 240, 0.1)',
@@ -1599,7 +1726,7 @@ if (isset($_GET['logout'])) {
                             position: 'right',
                             title: {
                                 display: true,
-                                text: 'Revenue ($)'
+                                text: 'Revenue (₱)'
                             },
                             grid: {
                                 drawOnChartArea: false

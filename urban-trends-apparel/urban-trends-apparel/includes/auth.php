@@ -9,8 +9,7 @@ class Auth {
     // Register new user
     public function register($email, $password, $firstname, $lastname, $address) {
         $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        
-        $stmt = $this->db->prepare("INSERT INTO users (email, password, firstname, lastname, address) VALUES (?, ?, ?, ?, ?)");
+        $stmt = $this->db->prepare("INSERT INTO users (id, email, password, firstname, lastname, address, is_admin) VALUES (NULL, ?, ?, ?, ?, ?, 0)");
         return $stmt->execute([$email, $hashed_password, $firstname, $lastname, $address]);
     }
     

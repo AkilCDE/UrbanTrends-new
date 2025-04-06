@@ -16,6 +16,10 @@ try {
 // Start session
 session_start();
 
+// Enable error reporting for debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 // Check if user is logged in and is admin
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['is_admin']) || $_SESSION['is_admin'] != 1) {
     header("Location: ../login.php");
@@ -35,14 +39,38 @@ class OrderDelivery {
     /**
      * Update order status and notify customer
      */
-    public function updateOrderStatus($order_id, $status) {
+    public function updateOrderStatus($order_id, $status, $notes = null) {
         try {
+            // Validate status
+            $valid_statuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'return_requested', 'returned', 'refunded'];
+            if (!in_array($status, $valid_statuses)) {
+                throw new Exception("Invalid status provided");
+            }
+            
+            // Get current status first
+            $stmt = $this->db->prepare("SELECT status FROM orders WHERE id = ?");
+            $stmt->execute([$order_id]);
+            $current_status = $stmt->fetchColumn();
+            
+            if ($current_status === false) {
+                throw new Exception("Order not found");
+            }
+            
+            // Prevent invalid status transitions
+            if ($current_status == 'cancelled' && $status != 'cancelled') {
+                throw new Exception("Cannot change status from cancelled");
+            }
+            
+            if ($current_status == 'delivered' && $status != 'delivered') {
+                throw new Exception("Cannot change status from delivered");
+            }
+            
             // Update order status
             $stmt = $this->db->prepare("UPDATE orders SET status = ? WHERE id = ?");
             $stmt->execute([$status, $order_id]);
             
             // Record status change in history
-            $this->recordStatusHistory($order_id, $status);
+            $this->recordStatusHistory($order_id, $status, $notes);
             
             // Update shipping status if needed
             if ($status == 'shipped' || $status == 'delivered') {
@@ -51,7 +79,7 @@ class OrderDelivery {
             }
             
             // Get order details for notification
-            $stmt = $this->db->prepare("SELECT u.email, u.firstname, o.order_number 
+            $stmt = $this->db->prepare("SELECT u.email, u.firstname, o.id as order_number 
                                       FROM orders o 
                                       JOIN users u ON o.user_id = u.id 
                                       WHERE o.id = ?");
@@ -64,8 +92,11 @@ class OrderDelivery {
             
             return true;
         } catch(PDOException $e) {
+            error_log("Database error updating order status: " . $e->getMessage());
+            throw new Exception("Database error occurred");
+        } catch(Exception $e) {
             error_log("Error updating order status: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
     
@@ -75,21 +106,23 @@ class OrderDelivery {
     private function updateShippingStatus($order_id, $status) {
         try {
             $stmt = $this->db->prepare("UPDATE shipping SET status = ?, updated_at = NOW() WHERE order_id = ?");
-            $stmt->execute([$status, $order_id]);
+            return $stmt->execute([$status, $order_id]);
         } catch(PDOException $e) {
             error_log("Error updating shipping status: " . $e->getMessage());
+            return false;
         }
     }
     
     /**
      * Record status change in history
      */
-    private function recordStatusHistory($order_id, $status) {
+    private function recordStatusHistory($order_id, $status, $notes = null) {
         try {
-            $stmt = $this->db->prepare("INSERT INTO order_status_history (order_id, status) VALUES (?, ?)");
-            $stmt->execute([$order_id, $status]);
+            $stmt = $this->db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
+            return $stmt->execute([$order_id, $status, $notes]);
         } catch(PDOException $e) {
             error_log("Error recording status history: " . $e->getMessage());
+            return false;
         }
     }
     
@@ -104,13 +137,27 @@ class OrderDelivery {
         <html>
         <head>
             <title>Order Status Update</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background-color: #4361ee; color: white; padding: 15px; text-align: center; }
+                .content { padding: 20px; background-color: #f9f9f9; }
+                .footer { padding: 10px; text-align: center; font-size: 0.8em; color: #666; }
+                .status { font-weight: bold; color: #4361ee; }
+                .button { display: inline-block; padding: 10px 20px; background-color: #4361ee; color: white; text-decoration: none; border-radius: 4px; }
+            </style>
         </head>
         <body>
-            <h2>Hello $name,</h2>
-            <p>Your order #$order_number status has been updated to: <strong>$status_text</strong></p>
-            
-            <p>Here's what to expect next:</p>";
-            
+            <div class='container'>
+                <div class='header'>
+                    <h1>Urban Trends Apparel</h1>
+                </div>
+                <div class='content'>
+                    <h2>Hello $name,</h2>
+                    <p>Your order <strong>#$order_number</strong> status has been updated to: <span class='status'>$status_text</span></p>
+                    
+                    <p>Here's what to expect next:</p>";
+                    
         switch($status) {
             case 'processing':
                 $message .= "<p>Our team is preparing your order for shipment. You'll receive another notification when it's on its way.</p>";
@@ -126,8 +173,15 @@ class OrderDelivery {
         }
         
         $message .= "
-            <p>If you have any questions, please contact our support team.</p>
-            <p>Best regards,<br>Urban Trends Team</p>
+                    <p>If you have any questions, please contact our support team.</p>
+                    <p style='text-align: center; margin-top: 20px;'>
+                        <a href='https://urbantrends.com/contact' class='button'>Contact Support</a>
+                    </p>
+                </div>
+                <div class='footer'>
+                    <p>Urban Trends Apparel &copy; " . date('Y') . "</p>
+                </div>
+            </div>
         </body>
         </html>";
         
@@ -137,7 +191,7 @@ class OrderDelivery {
         $headers .= "From: Urban Trends <no-reply@urbantrends.com>" . "\r\n";
         
         // Send email
-        mail($email, $subject, $message, $headers);
+        return mail($email, $subject, $message, $headers);
     }
     
     /**
@@ -145,6 +199,26 @@ class OrderDelivery {
      */
     public function scheduleDelivery($order_id, $delivery_data) {
         try {
+            // Validate input
+            if (!is_numeric($order_id) || $order_id <= 0) {
+                throw new Exception("Invalid order ID");
+            }
+            
+            $is_pickup = !empty($delivery_data['is_pickup']);
+            
+            if ($is_pickup && empty($delivery_data['pickup_location'])) {
+                throw new Exception("Pickup location is required");
+            }
+            
+            if (!$is_pickup) {
+                if (empty($delivery_data['delivery_date'])) {
+                    throw new Exception("Delivery date is required");
+                }
+                if (empty($delivery_data['carrier'])) {
+                    throw new Exception("Carrier is required");
+                }
+            }
+            
             // Check if shipping record exists
             $stmt = $this->db->prepare("SELECT id FROM shipping WHERE order_id = ?");
             $stmt->execute([$order_id]);
@@ -162,11 +236,11 @@ class OrderDelivery {
                                            updated_at = NOW()
                                            WHERE order_id = ?");
                 $stmt->execute([
-                    $delivery_data['pickup_location'],
-                    $delivery_data['delivery_date'],
-                    $delivery_data['carrier'],
-                    $delivery_data['tracking_number'],
-                    $delivery_data['is_pickup'] ? 'Pickup' : 'Delivery',
+                    $is_pickup ? $delivery_data['pickup_location'] : null,
+                    $is_pickup ? null : $delivery_data['delivery_date'],
+                    $is_pickup ? null : $delivery_data['carrier'],
+                    $is_pickup ? null : $delivery_data['tracking_number'],
+                    $is_pickup ? 'Pickup' : 'Delivery',
                     $order_id
                 ]);
             } else {
@@ -176,23 +250,29 @@ class OrderDelivery {
                                            VALUES (?, ?, ?, ?, ?, ?, 'processing')");
                 $stmt->execute([
                     $order_id,
-                    $delivery_data['pickup_location'],
-                    $delivery_data['delivery_date'],
-                    $delivery_data['carrier'],
-                    $delivery_data['tracking_number'],
-                    $delivery_data['is_pickup'] ? 'Pickup' : 'Delivery'
+                    $is_pickup ? $delivery_data['pickup_location'] : null,
+                    $is_pickup ? null : $delivery_data['delivery_date'],
+                    $is_pickup ? null : $delivery_data['carrier'],
+                    $is_pickup ? null : $delivery_data['tracking_number'],
+                    $is_pickup ? 'Pickup' : 'Delivery'
                 ]);
             }
             
+            // Update order status to processing if it's pending
+            $this->updateOrderStatus($order_id, 'processing', 'Delivery scheduled');
+            
             // If pickup, send pickup instructions
-            if ($delivery_data['is_pickup']) {
+            if ($is_pickup) {
                 $this->sendPickupInstructions($order_id);
             }
             
             return true;
         } catch(PDOException $e) {
+            error_log("Database error scheduling delivery: " . $e->getMessage());
+            throw new Exception("Database error occurred");
+        } catch(Exception $e) {
             error_log("Error scheduling delivery: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
     
@@ -200,7 +280,7 @@ class OrderDelivery {
      * Send pickup instructions to customer
      */
     private function sendPickupInstructions($order_id) {
-        $stmt = $this->db->prepare("SELECT u.email, u.firstname, o.order_number, s.pickup_location
+        $stmt = $this->db->prepare("SELECT u.email, u.firstname, o.id as order_number, s.pickup_location
                                   FROM orders o 
                                   JOIN users u ON o.user_id = u.id
                                   JOIN shipping s ON o.id = s.order_id
@@ -215,19 +295,41 @@ class OrderDelivery {
             <html>
             <head>
                 <title>Pickup Instructions</title>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                    .header { background-color: #4361ee; color: white; padding: 15px; text-align: center; }
+                    .content { padding: 20px; background-color: #f9f9f9; }
+                    .footer { padding: 10px; text-align: center; font-size: 0.8em; color: #666; }
+                    .info-box { background-color: #fff; border: 1px solid #ddd; padding: 15px; margin: 15px 0; border-radius: 4px; }
+                    .button { display: inline-block; padding: 10px 20px; background-color: #4361ee; color: white; text-decoration: none; border-radius: 4px; }
+                </style>
             </head>
             <body>
-                <h2>Hello {$order['firstname']},</h2>
-                <p>Your order #{$order['order_number']} is ready for pickup at our store!</p>
-                
-                <h3>Pickup Information:</h3>
-                <p><strong>Location:</strong> {$order['pickup_location']}</p>
-                <p><strong>Pickup Hours:</strong> Monday-Friday, 9AM-6PM</p>
-                
-                <p>Please bring your order confirmation email and a valid ID when picking up your order.</p>
-                
-                <p>If you have any questions, please contact our support team.</p>
-                <p>Best regards,<br>Urban Trends Team</p>
+                <div class='container'>
+                    <div class='header'>
+                        <h1>Urban Trends Apparel</h1>
+                    </div>
+                    <div class='content'>
+                        <h2>Hello {$order['firstname']},</h2>
+                        <p>Your order <strong>#{$order['order_number']}</strong> is ready for pickup at our store!</p>
+                        
+                        <div class='info-box'>
+                            <h3>Pickup Information:</h3>
+                            <p><strong>Location:</strong> {$order['pickup_location']}</p>
+                            <p><strong>Pickup Hours:</strong> Monday-Friday, 9AM-6PM</p>
+                        </div>
+                        
+                        <p>Please bring your order confirmation email and a valid ID when picking up your order.</p>
+                        
+                        <p style='text-align: center; margin-top: 20px;'>
+                            <a href='https://urbantrends.com/contact' class='button'>Contact Support</a>
+                        </p>
+                    </div>
+                    <div class='footer'>
+                        <p>Urban Trends Apparel &copy; " . date('Y') . "</p>
+                    </div>
+                </div>
             </body>
             </html>";
             
@@ -235,8 +337,9 @@ class OrderDelivery {
             $headers .= "Content-type:text/html;charset=UTF-8" . "\r\n";
             $headers .= "From: Urban Trends <no-reply@urbantrends.com>" . "\r\n";
             
-            mail($order['email'], $subject, $message, $headers);
+            return mail($order['email'], $subject, $message, $headers);
         }
+        return false;
     }
     
     /**
@@ -262,10 +365,12 @@ class OrderDelivery {
     public function getAllOrders($status = null, $date_from = null, $date_to = null) {
         try {
             $query = "SELECT o.*, u.email, u.firstname, u.lastname, 
-                     s.pickup_location, s.estimated_delivery, s.carrier, s.tracking_number
+                     s.pickup_location, s.estimated_delivery, s.carrier, s.tracking_number,
+                     p.payment_method, p.status as payment_status
                      FROM orders o 
                      JOIN users u ON o.user_id = u.id
-                     LEFT JOIN shipping s ON o.id = s.order_id";
+                     LEFT JOIN shipping s ON o.id = s.order_id
+                     LEFT JOIN payments p ON o.id = p.order_id";
             
             $conditions = [];
             $params = [];
@@ -308,10 +413,12 @@ class OrderDelivery {
             // Get order info
             $stmt = $this->db->prepare("SELECT o.*, u.email, u.firstname, u.lastname, u.address, u.phone,
                                       s.tracking_number, s.carrier, s.shipping_method, s.estimated_delivery, 
-                                      s.actual_delivery, s.pickup_location, s.status as shipping_status
+                                      s.actual_delivery, s.pickup_location, s.status as shipping_status,
+                                      p.payment_method, p.status as payment_status, p.transaction_id
                                       FROM orders o 
                                       JOIN users u ON o.user_id = u.id
                                       LEFT JOIN shipping s ON o.id = s.order_id
+                                      LEFT JOIN payments p ON o.id = p.order_id
                                       WHERE o.id = ?");
             $stmt->execute([$order_id]);
             $order = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -333,6 +440,15 @@ class OrderDelivery {
             $stmt->execute([$order_id]);
             $order['items'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
+            // Calculate total from items if needed
+            if (empty($order['total_amount']) && !empty($order['items'])) {
+                $total = 0;
+                foreach ($order['items'] as $item) {
+                    $total += $item['price'] * $item['quantity'];
+                }
+                $order['total_amount'] = $total;
+            }
+            
             // Get status history
             $order['status_history'] = $this->getOrderStatusHistory($order_id);
             
@@ -342,6 +458,85 @@ class OrderDelivery {
             return null;
         }
     }
+    
+    /**
+     * Update payment information
+     */
+    public function updatePayment($order_id, $payment_data) {
+        try {
+            // Validate input
+            if (!is_numeric($order_id) || $order_id <= 0) {
+                throw new Exception("Invalid order ID");
+            }
+
+            if (empty($payment_data['payment_method'])) {
+                throw new Exception("Payment method is required");
+            }
+
+            if (empty($payment_data['status'])) {
+                throw new Exception("Payment status is required");
+            }
+
+            // Get order total amount
+            $stmt = $this->db->prepare("SELECT total_amount FROM orders WHERE id = ?");
+            $stmt->execute([$order_id]);
+            $amount = $stmt->fetchColumn();
+
+            if ($amount === false) {
+                throw new Exception("Order not found");
+            }
+
+            // Check if payment record exists
+            $stmt = $this->db->prepare("SELECT id FROM payments WHERE order_id = ?");
+            $stmt->execute([$order_id]);
+            $payment_exists = $stmt->fetchColumn();
+
+            if ($payment_exists) {
+                // Update existing payment
+                $stmt = $this->db->prepare("UPDATE payments SET 
+                                          payment_method = ?,
+                                          status = ?,
+                                          transaction_id = ?,
+                                          updated_at = NOW()
+                                          WHERE order_id = ?");
+                $result = $stmt->execute([
+                    $payment_data['payment_method'],
+                    $payment_data['status'],
+                    $payment_data['transaction_id'] ?? null,
+                    $order_id
+                ]);
+            } else {
+                // Create new payment record
+                $stmt = $this->db->prepare("INSERT INTO payments 
+                                          (order_id, amount, payment_method, status, transaction_id, payment_date)
+                                          VALUES (?, ?, ?, ?, ?, NOW())");
+                $result = $stmt->execute([
+                    $order_id,
+                    $amount,
+                    $payment_data['payment_method'],
+                    $payment_data['status'],
+                    $payment_data['transaction_id'] ?? null
+                ]);
+            }
+
+            if (!$result) {
+                throw new Exception("Failed to update payment in database");
+            }
+
+            // Update order status if payment is completed
+            if ($payment_data['status'] == 'completed') {
+                $this->updateOrderStatus($order_id, 'processing', 'Payment completed');
+            }
+
+            return true;
+        } catch(PDOException $e) {
+            error_log("Database error updating payment: " . $e->getMessage());
+            throw new Exception("Database error occurred: " . $e->getMessage());
+        } catch(Exception $e) {
+            error_log("Error updating payment: " . $e->getMessage());
+            throw $e;
+        }
+    }
 }
 
 // Initialize OrderDelivery
@@ -349,43 +544,57 @@ $orderDelivery = new OrderDelivery($db);
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Update order status
-    if (isset($_POST['update_status'])) {
-        $order_id = $_POST['order_id'];
-        $status = $_POST['status'];
-        
-        if ($orderDelivery->updateOrderStatus($order_id, $status)) {
-            $_SESSION['success_message'] = "Order status updated successfully!";
-        } else {
-            $_SESSION['error_message'] = "Failed to update order status.";
+    try {
+        // Update order status
+        if (isset($_POST['update_status'])) {
+            $order_id = (int)$_POST['order_id'];
+            $status = $_POST['status'];
+            $notes = $_POST['notes'] ?? null;
+            
+            if ($orderDelivery->updateOrderStatus($order_id, $status, $notes)) {
+                $_SESSION['success_message'] = "Order status updated successfully!";
+            }
         }
         
-        header("Location: orders.php" . (isset($_GET['id']) ? '?id='.$_GET['id'] : ''));
-        exit;
+        // Schedule delivery
+        if (isset($_POST['schedule_delivery'])) {
+            $order_id = (int)$_POST['order_id'];
+            $is_pickup = isset($_POST['is_pickup']) ? 1 : 0;
+            
+            $delivery_data = [
+                'is_pickup' => $is_pickup,
+                'pickup_location' => $is_pickup ? ($_POST['pickup_location'] ?? '') : null,
+                'delivery_date' => !$is_pickup ? ($_POST['delivery_date'] ?? null) : null,
+                'carrier' => !$is_pickup ? ($_POST['carrier'] ?? null) : null,
+                'tracking_number' => !$is_pickup ? ($_POST['tracking_number'] ?? null) : null
+            ];
+            
+            if ($orderDelivery->scheduleDelivery($order_id, $delivery_data)) {
+                $_SESSION['success_message'] = "Delivery scheduled successfully!";
+            }
+        }
+        
+        // Update payment
+        if (isset($_POST['update_payment'])) {
+            $order_id = (int)$_POST['order_id'];
+            
+            $payment_data = [
+                'payment_method' => $_POST['payment_method'],
+                'status' => $_POST['payment_status'],
+                'transaction_id' => $_POST['transaction_id'] ?? null
+            ];
+
+            if ($orderDelivery->updatePayment($order_id, $payment_data)) {
+                $_SESSION['success_message'] = "Payment information updated successfully!";
+            }
+        }
+        
+    } catch(Exception $e) {
+        $_SESSION['error_message'] = $e->getMessage();
     }
     
-    // Schedule delivery
-    if (isset($_POST['schedule_delivery'])) {
-        $order_id = $_POST['order_id'];
-        $is_pickup = isset($_POST['is_pickup']) ? 1 : 0;
-        
-        $delivery_data = [
-            'is_pickup' => $is_pickup,
-            'pickup_location' => $is_pickup ? ($_POST['pickup_location'] ?? '') : null,
-            'delivery_date' => !$is_pickup ? ($_POST['delivery_date'] ?? null) : null,
-            'carrier' => !$is_pickup ? ($_POST['carrier'] ?? null) : null,
-            'tracking_number' => !$is_pickup ? ($_POST['tracking_number'] ?? null) : null
-        ];
-        
-        if ($orderDelivery->scheduleDelivery($order_id, $delivery_data)) {
-            $_SESSION['success_message'] = "Delivery scheduled successfully!";
-        } else {
-            $_SESSION['error_message'] = "Failed to schedule delivery.";
-        }
-        
-        header("Location: orders.php?id=$order_id");
-        exit;
-    }
+    header("Location: orders.php" . (isset($_GET['id']) ? '?id='.$_GET['id'] : ''));
+    exit;
 }
 
 // Get order details if viewing single order
@@ -400,9 +609,9 @@ if (isset($_GET['id'])) {
 }
 
 // Get all orders with filters
-$status_filter = isset($_GET['status']) ? $_GET['status'] : null;
-$date_from = isset($_GET['date_from']) ? $_GET['date_from'] : null;
-$date_to = isset($_GET['date_to']) ? $_GET['date_to'] : null;
+$status_filter = $_GET['status'] ?? null;
+$date_from = $_GET['date_from'] ?? null;
+$date_to = $_GET['date_to'] ?? null;
 
 $orders = $orderDelivery->getAllOrders($status_filter, $date_from, $date_to);
 
@@ -551,6 +760,26 @@ if (isset($_GET['logout'])) {
             margin-right: 5px;
         }
         
+        /* Alerts */
+        .alert {
+            padding: 12px 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+        }
+        
+        .alert-success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-danger {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
         /* Tables */
         .table-container {
             background-color: white;
@@ -588,6 +817,7 @@ if (isset($_GET['logout'])) {
             border-radius: 20px;
             font-size: 0.8rem;
             font-weight: 500;
+            display: inline-block;
         }
         
         .status.pending {
@@ -615,16 +845,52 @@ if (isset($_GET['logout'])) {
             color: #721C24;
         }
         
+        .status.return_requested,
+        .status.returned,
+        .status.refunded {
+            background-color: #E2E3E5;
+            color: #383D41;
+        }
+        
+        /* Payment Status */
+        .payment-status {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            display: inline-block;
+        }
+        
+        .payment-status.pending {
+            background-color: #FFF3CD;
+            color: #856404;
+        }
+        
+        .payment-status.completed {
+            background-color: #D4EDDA;
+            color: #155724;
+        }
+        
+        .payment-status.failed {
+            background-color: #F8D7DA;
+            color: #721C24;
+        }
+        
+        .payment-status.refunded {
+            background-color: #E2E3E5;
+            color: #383D41;
+        }
+        
         /* Buttons */
         .btn {
-            padding: 6px 12px;
+            padding: 8px 16px;
             border-radius: 4px;
-            font-size: 0.8rem;
+            font-size: 0.9rem;
             cursor: pointer;
             transition: all 0.3s;
             border: none;
             display: inline-flex;
             align-items: center;
+            text-decoration: none;
         }
         
         .btn i {
@@ -658,9 +924,18 @@ if (isset($_GET['logout'])) {
             background-color: #3aa8d1;
         }
         
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background-color: #5a6268;
+        }
+        
         .btn-sm {
-            padding: 4px 8px;
-            font-size: 0.75rem;
+            padding: 5px 10px;
+            font-size: 0.8rem;
         }
         
         /* Forms */
@@ -686,6 +961,11 @@ if (isset($_GET['logout'])) {
             outline: none;
             border-color: var(--primary-color);
             box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.2);
+        }
+        
+        textarea.form-control {
+            min-height: 100px;
+            resize: vertical;
         }
         
         /* Order Details */
@@ -732,6 +1012,11 @@ if (isset($_GET['logout'])) {
         .order-meta-item p {
             font-weight: 500;
             color: var(--dark-color);
+            margin-bottom: 3px;
+        }
+        
+        .order-meta-item p:last-child {
+            margin-bottom: 0;
         }
         
         .order-items {
@@ -845,6 +1130,12 @@ if (isset($_GET['logout'])) {
             color: var(--dark-color);
         }
         
+        .status-event-notes {
+            font-size: 0.9rem;
+            color: #666;
+            margin-top: 5px;
+        }
+        
         /* Filters */
         .filters {
             display: grid;
@@ -858,7 +1149,7 @@ if (isset($_GET['logout'])) {
         }
         
         /* Delivery Scheduling */
-        .delivery-schedule {
+        .delivery-schedule, .payment-update, .status-update {
             background-color: white;
             border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.05);
@@ -866,7 +1157,7 @@ if (isset($_GET['logout'])) {
             margin-top: 20px;
         }
         
-        .delivery-schedule h4 {
+        .delivery-schedule h4, .payment-update h4, .status-update h4 {
             margin-bottom: 15px;
             color: var(--dark-color);
         }
@@ -974,13 +1265,13 @@ if (isset($_GET['logout'])) {
         </div>
 
         <?php if (isset($_SESSION['success_message'])): ?>
-            <div class="alert alert-success" style="background-color: #d4edda; color: #155724; padding: 10px; border-radius: 4px; margin-bottom: 15px;">
+            <div class="alert alert-success">
                 <?php echo $_SESSION['success_message']; unset($_SESSION['success_message']); ?>
             </div>
         <?php endif; ?>
         
         <?php if (isset($_SESSION['error_message'])): ?>
-            <div class="alert alert-danger" style="background-color: #f8d7da; color: #721c24; padding: 10px; border-radius: 4px; margin-bottom: 15px;">
+            <div class="alert alert-danger">
                 <?php echo $_SESSION['error_message']; unset($_SESSION['error_message']); ?>
             </div>
         <?php endif; ?>
@@ -992,7 +1283,7 @@ if (isset($_GET['logout'])) {
                     <h3>Order Details</h3>
                     <div>
                         <span class="status <?php echo $order['status']; ?>">
-                            <?php echo ucfirst($order['status']); ?>
+                            <?php echo ucfirst(str_replace('_', ' ', $order['status'])); ?>
                         </span>
                     </div>
                 </div>
@@ -1000,21 +1291,33 @@ if (isset($_GET['logout'])) {
                 <div class="order-meta">
                     <div class="order-meta-item">
                         <h4>Customer</h4>
-                        <p><?php echo $order['firstname'] . ' ' . $order['lastname']; ?></p>
-                        <p><?php echo $order['email']; ?></p>
-                        <p><?php echo $order['phone']; ?></p>
+                        <p><?php echo htmlspecialchars($order['firstname'] . ' ' . $order['lastname']); ?></p>
+                        <p><?php echo htmlspecialchars($order['email']); ?></p>
+                        <p><?php echo htmlspecialchars($order['phone'] ?? 'Not provided'); ?></p>
                     </div>
                     
                     <div class="order-meta-item">
                         <h4>Shipping Address</h4>
-                        <p><?php echo nl2br($order['address']); ?></p>
+                        <p><?php echo nl2br(htmlspecialchars($order['address'])); ?></p>
                     </div>
                     
                     <div class="order-meta-item">
                         <h4>Order Information</h4>
                         <p><strong>Date:</strong> <?php echo date('M d, Y H:i', strtotime($order['order_date'])); ?></p>
                         <p><strong>Number:</strong> <?php echo $order['id']; ?></p>
-                        <p><strong>Payment:</strong> Cash on Delivery</p>
+                        <p><strong>Payment:</strong> 
+                            <?php if (!empty($order['payment_method'])): ?>
+                                <?php echo ucwords(str_replace('_', ' ', $order['payment_method'])); ?>
+                                <span class="payment-status <?php echo $order['payment_status'] ?? 'pending'; ?>">
+                                    (<?php echo ucfirst($order['payment_status'] ?? 'pending'); ?>)
+                                </span>
+                                <?php if (!empty($order['transaction_id'])): ?>
+                                    <p><strong>Transaction ID:</strong> <?php echo $order['transaction_id']; ?></p>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                Not recorded
+                            <?php endif; ?>
+                        </p>
                     </div>
                     
                     <?php if (!empty($order['pickup_location']) || !empty($order['estimated_delivery'])): ?>
@@ -1022,18 +1325,25 @@ if (isset($_GET['logout'])) {
                             <h4>Delivery Information</h4>
                             <?php if (!empty($order['pickup_location'])): ?>
                                 <p><strong>Type:</strong> In-Store Pickup</p>
-                                <p><strong>Pickup Location:</strong> <?php echo $order['pickup_location']; ?></p>
+                                <p><strong>Pickup Location:</strong> <?php echo htmlspecialchars($order['pickup_location']); ?></p>
                             <?php else: ?>
                                 <p><strong>Type:</strong> Delivery</p>
                                 <?php if (!empty($order['estimated_delivery'])): ?>
                                     <p><strong>Estimated Delivery:</strong> <?php echo date('M d, Y', strtotime($order['estimated_delivery'])); ?></p>
                                 <?php endif; ?>
                                 <?php if (!empty($order['carrier'])): ?>
-                                    <p><strong>Carrier:</strong> <?php echo $order['carrier']; ?></p>
+                                    <p><strong>Carrier:</strong> <?php echo htmlspecialchars($order['carrier']); ?></p>
                                 <?php endif; ?>
                                 <?php if (!empty($order['tracking_number'])): ?>
-                                    <p><strong>Tracking Number:</strong> <?php echo $order['tracking_number']; ?></p>
+                                    <p><strong>Tracking Number:</strong> <?php echo htmlspecialchars($order['tracking_number']); ?></p>
                                 <?php endif; ?>
+                            <?php endif; ?>
+                            <?php if (!empty($order['shipping_status'])): ?>
+                                <p><strong>Shipping Status:</strong> 
+                                    <span class="status <?php echo $order['shipping_status']; ?>">
+                                        <?php echo ucfirst($order['shipping_status']); ?>
+                                    </span>
+                                </p>
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
@@ -1043,15 +1353,15 @@ if (isset($_GET['logout'])) {
                     <h4>Order Items</h4>
                     <?php foreach ($order['items'] as $item): ?>
                         <div class="order-item">
-                            <img src="../assets/images/products/<?php echo $item['image']; ?>" alt="<?php echo $item['name']; ?>" class="order-item-image">
+                            <img src="../assets/images/products/<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>" class="order-item-image">
                             <div class="order-item-details">
-                                <div class="order-item-name"><?php echo $item['name']; ?></div>
+                                <div class="order-item-name"><?php echo htmlspecialchars($item['name']); ?></div>
                                 <div class="order-item-meta">
                                     Quantity: <?php echo $item['quantity']; ?> × $<?php echo number_format($item['unit_price'], 2); ?>
                                 </div>
                             </div>
                             <div class="order-item-price">
-                                $<?php echo number_format($item['quantity'] * $item['unit_price'], 2); ?>
+                                $<?php echo number_format($item['quantity'] * $item['price'], 2); ?>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -1072,18 +1382,73 @@ if (isset($_GET['logout'])) {
                     </div>
                 </div>
                 
-                <!-- Status Update Form -->
-                <div class="status-update" style="margin-top: 30px;">
-                    <h4>Update Order Status</h4>
-                    <form method="POST" style="display: flex; gap: 10px; align-items: center;">
+                <!-- Payment Update Form -->
+                <div class="payment-update">
+                    <h4>Update Payment Information</h4>
+                    <form method="POST">
                         <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
-                        <select name="status" class="form-control" style="flex: 1; max-width: 200px;">
-                            <option value="pending" <?php echo $order['status'] == 'pending' ? 'selected' : ''; ?>>Pending</option>
-                            <option value="processing" <?php echo $order['status'] == 'processing' ? 'selected' : ''; ?>>Processing</option>
-                            <option value="shipped" <?php echo $order['status'] == 'shipped' ? 'selected' : ''; ?>>Shipped</option>
-                            <option value="delivered" <?php echo $order['status'] == 'delivered' ? 'selected' : ''; ?>>Delivered</option>
-                            <option value="cancelled" <?php echo $order['status'] == 'cancelled' ? 'selected' : ''; ?>>Cancelled</option>
-                        </select>
+                        
+                        <div class="form-group">
+                            <label for="payment_method">Payment Method</label>
+                            <select id="payment_method" name="payment_method" class="form-control" required>
+                                <option value="">Select Payment Method</option>
+                                <option value="cod" <?php echo isset($order['payment_method']) && $order['payment_method'] == 'cod' ? 'selected' : ''; ?>>Cash on Delivery</option>
+                                <option value="gcash" <?php echo isset($order['payment_method']) && $order['payment_method'] == 'gcash' ? 'selected' : ''; ?>>GCash</option>
+                                <option value="paypal" <?php echo isset($order['payment_method']) && $order['payment_method'] == 'paypal' ? 'selected' : ''; ?>>PayPal</option>
+                                <option value="credit_card" <?php echo isset($order['payment_method']) && $order['payment_method'] == 'credit_card' ? 'selected' : ''; ?>>Credit Card</option>
+                                <option value="debit_card" <?php echo isset($order['payment_method']) && $order['payment_method'] == 'debit_card' ? 'selected' : ''; ?>>Debit Card</option>
+                                <option value="wallet" <?php echo isset($order['payment_method']) && $order['payment_method'] == 'wallet' ? 'selected' : ''; ?>>Wallet</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="payment_status">Payment Status</label>
+                            <select id="payment_status" name="payment_status" class="form-control" required>
+                                <option value="pending" <?php echo isset($order['payment_status']) && $order['payment_status'] == 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                <option value="completed" <?php echo isset($order['payment_status']) && $order['payment_status'] == 'completed' ? 'selected' : ''; ?>>Completed</option>
+                                <option value="failed" <?php echo isset($order['payment_status']) && $order['payment_status'] == 'failed' ? 'selected' : ''; ?>>Failed</option>
+                                <option value="refunded" <?php echo isset($order['payment_status']) && $order['payment_status'] == 'refunded' ? 'selected' : ''; ?>>Refunded</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="transaction_id">Transaction ID (if applicable)</label>
+                            <input type="text" id="transaction_id" name="transaction_id" 
+                                   value="<?php echo htmlspecialchars($order['transaction_id'] ?? ''); ?>" 
+                                   class="form-control">
+                        </div>
+                        
+                        <button type="submit" name="update_payment" class="btn btn-success">
+                            <i class="fas fa-credit-card"></i> Update Payment
+                        </button>
+                    </form>
+                </div>
+                
+                <!-- Status Update Form -->
+                <div class="status-update">
+                    <h4>Update Order Status</h4>
+                    <form method="POST">
+                        <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
+                        
+                        <div class="form-group">
+                            <label for="status">Status</label>
+                            <select name="status" id="status" class="form-control" required>
+                                <option value="pending" <?php echo $order['status'] == 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                <option value="processing" <?php echo $order['status'] == 'processing' ? 'selected' : ''; ?>>Processing</option>
+                                <option value="shipped" <?php echo $order['status'] == 'shipped' ? 'selected' : ''; ?>>Shipped</option>
+                                <option value="delivered" <?php echo $order['status'] == 'delivered' ? 'selected' : ''; ?>>Delivered</option>
+                                <option value="cancelled" <?php echo $order['status'] == 'cancelled' ? 'selected' : ''; ?>>Cancelled</option>
+                                <option value="return_requested" <?php echo $order['status'] == 'return_requested' ? 'selected' : ''; ?>>Return Requested</option>
+                                <option value="returned" <?php echo $order['status'] == 'returned' ? 'selected' : ''; ?>>Returned</option>
+                                <option value="refunded" <?php echo $order['status'] == 'refunded' ? 'selected' : ''; ?>>Refunded</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="notes">Notes (optional)</label>
+                            <textarea id="notes" name="notes" class="form-control" placeholder="Add any notes about this status change..."></textarea>
+                        </div>
+                        
                         <button type="submit" name="update_status" class="btn btn-primary">
                             <i class="fas fa-save"></i> Update Status
                         </button>
@@ -1107,28 +1472,30 @@ if (isset($_GET['logout'])) {
                             <div class="form-group" id="pickup_location_group" style="<?php echo empty($order['pickup_location']) ? 'display: none;' : ''; ?>">
                                 <label for="pickup_location">Pickup Location</label>
                                 <input type="text" id="pickup_location" name="pickup_location" 
-                                       value="<?php echo $order['pickup_location'] ?? ''; ?>" 
-                                       class="form-control">
+                                       value="<?php echo htmlspecialchars($order['pickup_location'] ?? ''); ?>" 
+                                       class="form-control" required>
                             </div>
                             
                             <div class="form-group" id="delivery_info_group" style="<?php echo !empty($order['pickup_location']) ? 'display: none;' : ''; ?>">
                                 <label for="delivery_date">Estimated Delivery Date</label>
                                 <input type="date" id="delivery_date" name="delivery_date" 
                                        value="<?php echo isset($order['estimated_delivery']) ? date('Y-m-d', strtotime($order['estimated_delivery'])) : ''; ?>" 
-                                       min="<?php echo date('Y-m-d'); ?>" class="form-control">
+                                       min="<?php echo date('Y-m-d'); ?>" class="form-control" required>
                                 
                                 <label for="carrier" style="margin-top: 10px;">Carrier</label>
-                                <select id="carrier" name="carrier" class="form-control">
+                                <select id="carrier" name="carrier" class="form-control" required>
                                     <option value="">Select Carrier</option>
                                     <option value="LBC" <?php echo isset($order['carrier']) && $order['carrier'] == 'LBC' ? 'selected' : ''; ?>>LBC</option>
                                     <option value="J&T Express" <?php echo isset($order['carrier']) && $order['carrier'] == 'J&T Express' ? 'selected' : ''; ?>>J&T Express</option>
                                     <option value="Ninja Van" <?php echo isset($order['carrier']) && $order['carrier'] == 'Ninja Van' ? 'selected' : ''; ?>>Ninja Van</option>
                                     <option value="DHL" <?php echo isset($order['carrier']) && $order['carrier'] == 'DHL' ? 'selected' : ''; ?>>DHL</option>
+                                    <option value="FedEx" <?php echo isset($order['carrier']) && $order['carrier'] == 'FedEx' ? 'selected' : ''; ?>>FedEx</option>
+                                    <option value="UPS" <?php echo isset($order['carrier']) && $order['carrier'] == 'UPS' ? 'selected' : ''; ?>>UPS</option>
                                 </select>
                                 
                                 <label for="tracking_number" style="margin-top: 10px;">Tracking Number</label>
                                 <input type="text" id="tracking_number" name="tracking_number" 
-                                       value="<?php echo $order['tracking_number'] ?? ''; ?>" 
+                                       value="<?php echo htmlspecialchars($order['tracking_number'] ?? ''); ?>" 
                                        class="form-control">
                             </div>
                             
@@ -1143,6 +1510,11 @@ if (isset($_GET['logout'])) {
                             const isPickup = this.checked;
                             document.getElementById('pickup_location_group').style.display = isPickup ? 'block' : 'none';
                             document.getElementById('delivery_info_group').style.display = isPickup ? 'none' : 'block';
+                            
+                            // Toggle required attributes
+                            document.getElementById('pickup_location').required = isPickup;
+                            document.getElementById('delivery_date').required = !isPickup;
+                            document.getElementById('carrier').required = !isPickup;
                         });
                     </script>
                 <?php endif; ?>
@@ -1151,19 +1523,25 @@ if (isset($_GET['logout'])) {
                 <div class="status-history">
                     <h4>Status History</h4>
                     <div class="status-timeline">
-                        <?php foreach ($order['status_history'] as $history): ?>
-                            <div class="status-event">
-                                <div class="status-event-date">
-                                    <?php echo date('M d, Y H:i', strtotime($history['updated_at'])); ?>
+                        <?php if (empty($order['status_history'])): ?>
+                            <p>No status history available.</p>
+                        <?php else: ?>
+                            <?php foreach ($order['status_history'] as $history): ?>
+                                <div class="status-event">
+                                    <div class="status-event-date">
+                                        <?php echo date('M d, Y H:i', strtotime($history['updated_at'])); ?>
+                                    </div>
+                                    <div class="status-event-status">
+                                        <?php echo ucfirst(str_replace('_', ' ', $history['status'])); ?>
+                                        <?php if (!empty($history['notes'])): ?>
+                                            <div class="status-event-notes">
+                                                <?php echo htmlspecialchars($history['notes']); ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
                                 </div>
-                                <div class="status-event-status">
-                                    <?php echo ucfirst($history['status']); ?>
-                                    <?php if (!empty($history['notes'])): ?>
-                                        <p><small><?php echo $history['notes']; ?></small></p>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                     </div>
                 </div>
                 
@@ -1185,6 +1563,9 @@ if (isset($_GET['logout'])) {
                         <option value="shipped" <?php echo $status_filter == 'shipped' ? 'selected' : ''; ?>>Shipped</option>
                         <option value="delivered" <?php echo $status_filter == 'delivered' ? 'selected' : ''; ?>>Delivered</option>
                         <option value="cancelled" <?php echo $status_filter == 'cancelled' ? 'selected' : ''; ?>>Cancelled</option>
+                        <option value="return_requested" <?php echo $status_filter == 'return_requested' ? 'selected' : ''; ?>>Return Requested</option>
+                        <option value="returned" <?php echo $status_filter == 'returned' ? 'selected' : ''; ?>>Returned</option>
+                        <option value="refunded" <?php echo $status_filter == 'refunded' ? 'selected' : ''; ?>>Refunded</option>
                     </select>
                 </div>
                 
@@ -1206,48 +1587,62 @@ if (isset($_GET['logout'])) {
             </div>
             
             <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Order #</th>
-                            <th>Customer</th>
-                            <th>Date</th>
-                            <th>Amount</th>
-                            <th>Status</th>
-                            <th>Delivery</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($orders as $order): ?>
+                <?php if (empty($orders)): ?>
+                    <p>No orders found matching your criteria.</p>
+                <?php else: ?>
+                    <table>
+                        <thead>
                             <tr>
-                                <td>#<?php echo $order['id']; ?></td>
-                                <td><?php echo $order['email']; ?></td>
-                                <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
-                                <td>$<?php echo number_format($order['total_amount'], 2); ?></td>
-                                <td>
-                                    <span class="status <?php echo $order['status']; ?>">
-                                        <?php echo ucfirst($order['status']); ?>
-                                    </span>
-                                </td>
-                                <td>
-                                    <?php if (!empty($order['pickup_location'])): ?>
-                                        Pickup
-                                    <?php elseif (!empty($order['estimated_delivery'])): ?>
-                                        Delivery
-                                    <?php else: ?>
-                                        Not scheduled
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <a href="orders.php?id=<?php echo $order['id']; ?>" class="btn btn-primary btn-sm">
-                                        <i class="fas fa-eye"></i> View
-                                    </a>
-                                </td>
+                                <th>Order #</th>
+                                <th>Customer</th>
+                                <th>Date</th>
+                                <th>Amount</th>
+                                <th>Status</th>
+                                <th>Payment</th>
+                                <th>Delivery</th>
+                                <th>Actions</th>
                             </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($orders as $order): ?>
+                                <tr>
+                                    <td>#<?php echo $order['id']; ?></td>
+                                    <td><?php echo htmlspecialchars($order['email']); ?></td>
+                                    <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
+                                    <td>$<?php echo number_format($order['total_amount'], 2); ?></td>
+                                    <td>
+                                        <span class="status <?php echo $order['status']; ?>">
+                                            <?php echo ucfirst(str_replace('_', ' ', $order['status'])); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <?php if (!empty($order['payment_method'])): ?>
+                                            <span class="payment-status <?php echo $order['payment_status'] ?? 'pending'; ?>">
+                                                <?php echo ucfirst($order['payment_status'] ?? 'pending'); ?>
+                                            </span>
+                                        <?php else: ?>
+                                            Not recorded
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php if (!empty($order['pickup_location'])): ?>
+                                            Pickup
+                                        <?php elseif (!empty($order['estimated_delivery'])): ?>
+                                            Delivery
+                                        <?php else: ?>
+                                            Not scheduled
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <a href="orders.php?id=<?php echo $order['id']; ?>" class="btn btn-primary btn-sm">
+                                            <i class="fas fa-eye"></i> View
+                                        </a>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
             </div>
         <?php endif; ?>
     </div>

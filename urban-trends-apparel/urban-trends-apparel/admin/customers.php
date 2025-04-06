@@ -604,6 +604,7 @@ if (isset($_GET['logout'])) {
             <h2><i class="fas fa-crown"></i> <span>Admin Panel</span></h2>
         </div>
         <ul>
+        <li><a href="dashboard.php"><i class="fas fa-tachometer-alt"></i> <span>Dashboard</span></a></li>
             <li><a href="products.php"><i class="fas fa-tshirt"></i> <span>Products</span></a></li>
             <li><a href="orders.php"><i class="fas fa-shopping-bag"></i> <span>Orders</span></a></li>
             <li><a href="customers.php" class="active"><i class="fas fa-users"></i> <span>Customers</span></a></li>

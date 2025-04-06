@@ -42,6 +42,13 @@ class Auth {
         session_unset();
         session_destroy();
     }
+    
+    public function getWalletBalance($user_id) {
+        $stmt = $this->db->prepare("SELECT balance FROM user_wallet WHERE user_id = ?");
+        $stmt->execute([$user_id]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $result ? $result['balance'] : 0;
+    }
 }
 
 $auth = new Auth($db);
@@ -53,6 +60,7 @@ if (!$auth->isLoggedIn()) {
 }
 
 $user = $auth->getCurrentUser();
+$user['wallet_balance'] = $auth->getWalletBalance($user['id']);
 $page_title = 'Profile';
 $message = '';
 
@@ -106,7 +114,7 @@ function canReturnOrder($order) {
     }
     
     // Check if order was delivered within the last 30 days
-    $delivered_date = strtotime($order['order_date']);
+    $delivered_date = strtotime($order['delivery_date'] ?? $order['order_date']);
     $thirty_days_ago = strtotime('-30 days');
     
     return $delivered_date >= $thirty_days_ago;
@@ -131,24 +139,23 @@ function processReturn($db, $order_id, $user_id) {
             throw new Exception("Only delivered orders can be returned.");
         }
         
-        // 3. Update order status to 'returned'
-        $stmt = $db->prepare("UPDATE orders SET status = 'returned' WHERE id = ?");
+        // 3. Update order status to 'return_requested'
+        $stmt = $db->prepare("UPDATE orders SET status = 'return_requested' WHERE id = ?");
         $stmt->execute([$order_id]);
         
         // 4. Add to order status history
         $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
-        $stmt->execute([$order_id, 'returned', 'Customer initiated return']);
+        $stmt->execute([$order_id, 'return_requested', 'Customer initiated return']);
         
         // 5. Update shipping status if shipping record exists
-        $stmt = $db->prepare("UPDATE shipping SET status = 'returned' WHERE order_id = ?");
+        $stmt = $db->prepare("UPDATE shipping SET status = 'return_requested' WHERE order_id = ?");
         $stmt->execute([$order_id]);
         
-        // 6. Restock products if needed
-        $order_items = getOrderItems($db, $order_id);
-        foreach ($order_items as $item) {
-            $stmt = $db->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-            $stmt->execute([$item['quantity'], $item['product_id']]);
-        }
+        // 6. Create a support ticket for the return request
+        $stmt = $db->prepare("INSERT INTO support_tickets (user_id, order_id, subject, message, status) VALUES (?, ?, ?, ?, ?)");
+        $subject = "Return Request for Order #" . $order_id;
+        $message = "Customer has requested to return order #" . $order_id . ". Please review and process the return.";
+        $stmt->execute([$user_id, $order_id, $subject, $message, 'open']);
         
         // Commit transaction
         $db->commit();
@@ -160,168 +167,350 @@ function processReturn($db, $order_id, $user_id) {
     }
 }
 
-// Handle Add to Cart and Buy Now actions
+function processRefund($db, $order_id, $user_id) {
+    try {
+        // Begin transaction
+        $db->beginTransaction();
+        
+        // 1. Check if the order exists, belongs to the user, and is eligible for refund
+        $stmt = $db->prepare("SELECT o.*, p.payment_method, p.transaction_id 
+                             FROM orders o 
+                             JOIN payments p ON o.id = p.order_id 
+                             WHERE o.id = ? AND o.user_id = ? AND o.status = 'returned'");
+        $stmt->execute([$order_id, $user_id]);
+        $order = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$order) {
+            throw new Exception("Order not found, doesn't belong to you, or not eligible for refund.");
+        }
+        
+        // 2. Calculate refund amount (total minus any discounts)
+        $stmt = $db->prepare("SELECT SUM(discount_amount) as total_discount FROM order_promotions WHERE order_id = ?");
+        $stmt->execute([$order_id]);
+        $discount = $stmt->fetch(PDO::FETCH_ASSOC);
+        $total_discount = $discount['total_discount'] ?? 0;
+        $refund_amount = $order['total_amount'] - $total_discount;
+        
+        // 3. Process refund based on payment method
+        if ($order['payment_method'] === 'wallet') {
+            // Refund to wallet
+            $stmt = $db->prepare("UPDATE user_wallet SET balance = balance + ? WHERE user_id = ?");
+            $stmt->execute([$refund_amount, $user_id]);
+        } elseif (in_array($order['payment_method'], ['credit_card', 'debit_card', 'paypal', 'gcash'])) {
+            // For real payment methods, we would integrate with payment gateway API here
+            // This is a simulation - in a real app, you'd call the payment provider's API
+            $transaction_id = "RFND-" . uniqid();
+        } else {
+            // For COD, we can't refund automatically
+            throw new Exception("Please contact customer service for refund as you paid via cash on delivery.");
+        }
+        
+        // 4. Update order status to 'refunded'
+        $stmt = $db->prepare("UPDATE orders SET status = 'refunded' WHERE id = ?");
+        $stmt->execute([$order_id]);
+        
+        // 5. Update payment status
+        $stmt = $db->prepare("UPDATE payments SET status = 'refunded', transaction_id = ? WHERE order_id = ?");
+        $stmt->execute([$transaction_id ?? null, $order_id]);
+        
+        // 6. Add to order status history
+        $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
+        $notes = "Refund processed for ₱" . number_format($refund_amount, 2) . " via " . strtoupper($order['payment_method']);
+        $stmt->execute([$order_id, 'refunded', $notes]);
+        
+        // 7. Update shipping status
+        $stmt = $db->prepare("UPDATE shipping SET status = 'returned' WHERE order_id = ?");
+        $stmt->execute([$order_id]);
+        
+        // 8. Update support ticket
+        $stmt = $db->prepare("UPDATE support_tickets SET status = 'resolved' WHERE order_id = ?");
+        $stmt->execute([$order_id]);
+        
+        // Commit transaction
+        $db->commit();
+        
+        return true;
+    } catch (Exception $e) {
+        $db->rollBack();
+        return $e->getMessage();
+    }
+}
+
+function getOrderHistory($db, $user_id, $order_id = null) {
+    $orders = [];
+    
+    // Base query to get orders
+    $sql = "SELECT o.*, 
+                   p.transaction_id, p.payment_method, p.status as payment_status,
+                   s.tracking_number, s.carrier, s.shipping_method, s.status as shipping_status,
+                   s.estimated_delivery, s.actual_delivery
+            FROM orders o
+            LEFT JOIN payments p ON o.id = p.order_id
+            LEFT JOIN shipping s ON o.id = s.order_id
+            WHERE o.user_id = ?";
+    
+    $params = [$user_id];
+    
+    if ($order_id) {
+        $sql .= " AND o.id = ?";
+        $params[] = $order_id;
+    }
+    
+    $sql .= " ORDER BY o.order_date DESC";
+    
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Get order items and status history for each order
+    foreach ($orders as &$order) {
+        // Get order items
+        $stmt = $db->prepare("SELECT oi.*, p.name, p.image, p.description 
+                             FROM order_items oi 
+                             JOIN products p ON oi.product_id = p.id 
+                             WHERE oi.order_id = ?");
+        $stmt->execute([$order['id']]);
+        $order['items'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Get status history
+        $stmt = $db->prepare("SELECT * FROM order_status_history 
+                             WHERE order_id = ? 
+                             ORDER BY changed_at DESC");
+        $stmt->execute([$order['id']]);
+        $order['status_history'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Get promotions if any
+        $stmt = $db->prepare("SELECT op.*, pr.code, pr.description as promo_description, pr.discount_type, pr.discount_value
+                             FROM order_promotions op 
+                             JOIN promotions pr ON op.promotion_id = pr.id 
+                             WHERE op.order_id = ?");
+        $stmt->execute([$order['id']]);
+        $order['promotions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Get return information if applicable
+        if (in_array($order['status'], ['return_requested', 'returned', 'refunded'])) {
+            $stmt = $db->prepare("SELECT * FROM support_tickets WHERE order_id = ?");
+            $stmt->execute([$order['id']]);
+            $order['return_ticket'] = $stmt->fetch(PDO::FETCH_ASSOC);
+        }
+    }
+    
+    return $order_id ? ($orders[0] ?? null) : $orders;
+}
+
+// Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['add_to_cart'])) {
-        $product_id = $_POST['product_id'];
-        $quantity = isset($_POST['quantity']) ? max(1, (int)$_POST['quantity']) : 1;
-        
-        try {
-            // Check if product already in cart
-            $stmt = $db->prepare("SELECT * FROM cart WHERE user_id = ? AND product_id = ?");
-            $stmt->execute([$_SESSION['user_id'], $product_id]);
-            $existing_item = $stmt->fetch();
-            
-            if ($existing_item) {
-                // Update quantity if already in cart
-                $stmt = $db->prepare("UPDATE cart SET quantity = quantity + ? WHERE id = ?");
-                $stmt->execute([$quantity, $existing_item['id']]);
-            } else {
-                // Add new item to cart
-                $stmt = $db->prepare("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)");
-                $stmt->execute([$_SESSION['user_id'], $product_id, $quantity]);
+    // Handle wallet funding
+    if (isset($_POST['add_funds'])) {
+        $amount = floatval($_POST['fund_amount']);
+        if ($amount >= 100) {
+            try {
+                $stmt = $db->prepare("
+                    INSERT INTO user_wallet (user_id, balance) 
+                    VALUES (?, ?)
+                    ON DUPLICATE KEY UPDATE balance = balance + ?
+                ");
+                $stmt->execute([$user['id'], $amount, $amount]);
+                
+                $_SESSION['success_message'] = "Successfully added ₱" . number_format($amount, 2) . " to your wallet!";
+                header("Location: profile.php#wallet");
+                exit;
+            } catch (Exception $e) {
+                $message = display_error("Failed to add funds: " . $e->getMessage());
             }
-            
-            $_SESSION['success_message'] = "Product added to cart successfully!";
-        } catch (PDOException $e) {
-            $_SESSION['error_message'] = "Error adding product to cart: " . $e->getMessage();
-        }
-        
-        header("Location: profile.php#cart");
-        exit;
-    }
-    
-    if (isset($_POST['buy_now'])) {
-        $product_id = $_POST['product_id'];
-        $quantity = isset($_POST['quantity']) ? max(1, (int)$_POST['quantity']) : 1;
-        
-        try {
-            // Clear current cart (optional, depends on your business logic)
-            $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ?");
-            $stmt->execute([$_SESSION['user_id']]);
-            
-            // Add the selected product to cart
-            $stmt = $db->prepare("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)");
-            $stmt->execute([$_SESSION['user_id'], $product_id, $quantity]);
-            
-            header("Location: checkout.php");
-            exit;
-        } catch (PDOException $e) {
-            $_SESSION['error_message'] = "Error processing your order: " . $e->getMessage();
-            header("Location: profile.php#cart");
-            exit;
+        } else {
+            $message = display_error("Minimum amount to add is ₱100");
         }
     }
     
-    // Handle profile update
-    if (isset($_POST['firstname'])) {
+    // Handle return requests
+    if (isset($_POST['order_action']) && $_POST['order_action'] === 'return') {
+        $order_id = intval($_POST['order_id']);
+        $result = processReturn($db, $order_id, $user['id']);
+        
+        if ($result === true) {
+            $_SESSION['success_message'] = "Return request submitted successfully. Our team will contact you soon.";
+            header("Location: profile.php#returns");
+            exit;
+        } else {
+            $message = display_error($result);
+        }
+    }
+    
+    // Handle refund requests (admin would typically handle this, but adding for completeness)
+    if (isset($_POST['refund_action']) && $_POST['refund_action'] === 'process_refund') {
+        $order_id = intval($_POST['order_id']);
+        $result = processRefund($db, $order_id, $user['id']);
+        
+        if ($result === true) {
+            $_SESSION['success_message'] = "Refund processed successfully.";
+            header("Location: profile.php#returns");
+            exit;
+        } else {
+            $message = display_error($result);
+        }
+    }
+    
+    // Handle profile updates
+    if (isset($_POST['update_profile'])) {
         $firstname = sanitize($_POST['firstname']);
         $lastname = sanitize($_POST['lastname']);
+        $phone = sanitize($_POST['phone']);
         $address = sanitize($_POST['address']);
         
-        // Update profile
-        $stmt = $db->prepare("UPDATE users SET firstname = ?, lastname = ?, address = ? WHERE id = ?");
-        if ($stmt->execute([$firstname, $lastname, $address, $user['id']])) {
-            // Update session
-            $_SESSION['user_firstname'] = $firstname;
-            $_SESSION['user_lastname'] = $lastname;
-            $_SESSION['user_address'] = $address;
+        try {
+            $stmt = $db->prepare("UPDATE users SET firstname = ?, lastname = ?, phone = ?, address = ? WHERE id = ?");
+            $stmt->execute([$firstname, $lastname, $phone, $address, $user['id']]);
             
-            $message = display_success('Profile updated successfully!');
-        } else {
-            $message = display_error('Error updating profile.');
-        }
-        
-        // Handle password change if provided
-        if (!empty($_POST['new_password']) && !empty($_POST['confirm_password'])) {
-            if ($_POST['new_password'] === $_POST['confirm_password']) {
-                $hashed_password = password_hash($_POST['new_password'], PASSWORD_DEFAULT);
-                $stmt = $db->prepare("UPDATE users SET password = ? WHERE id = ?");
-                if ($stmt->execute([$hashed_password, $user['id']])) {
-                    $message .= display_success('Password changed successfully!');
-                } else {
-                    $message .= display_error('Error changing password.');
-                }
-            } else {
-                $message .= display_error('Passwords do not match.');
-            }
+            $_SESSION['success_message'] = "Profile updated successfully!";
+            header("Location: profile.php#edit-profile");
+            exit;
+        } catch (Exception $e) {
+            $message = display_error("Failed to update profile: " . $e->getMessage());
         }
     }
     
-    // Handle wishlist actions
-    if (isset($_POST['wishlist_action'])) {
-        $product_id = sanitize($_POST['product_id']);
+    // Handle password changes
+    if (isset($_POST['change_password'])) {
+        $current_password = $_POST['current_password'];
+        $new_password = $_POST['new_password'];
+        $confirm_password = $_POST['confirm_password'];
         
-        if ($_POST['wishlist_action'] === 'add') {
-            $stmt = $db->prepare("INSERT INTO wishlist (user_id, product_id) VALUES (?, ?)");
-            if ($stmt->execute([$user['id'], $product_id])) {
-                $message = display_success('Item added to wishlist!');
-            } else {
-                $message = display_error('Error adding item to wishlist.');
-            }
-        } elseif ($_POST['wishlist_action'] === 'remove') {
-            $stmt = $db->prepare("DELETE FROM wishlist WHERE user_id = ? AND product_id = ?");
-            if ($stmt->execute([$user['id'], $product_id])) {
-                $message = display_success('Item removed from wishlist!');
-            } else {
-                $message = display_error('Error removing item from wishlist.');
+        // Verify current password
+        $stmt = $db->prepare("SELECT password FROM users WHERE id = ?");
+        $stmt->execute([$user['id']]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!password_verify($current_password, $result['password'])) {
+            $message = display_error("Current password is incorrect.");
+        } elseif ($new_password !== $confirm_password) {
+            $message = display_error("New passwords do not match.");
+        } elseif (strlen($new_password) < 8) {
+            $message = display_error("Password must be at least 8 characters long.");
+        } else {
+            try {
+                $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
+                $stmt = $db->prepare("UPDATE users SET password = ? WHERE id = ?");
+                $stmt->execute([$hashed_password, $user['id']]);
+                
+                $_SESSION['success_message'] = "Password changed successfully!";
+                header("Location: profile.php#change-password");
+                exit;
+            } catch (Exception $e) {
+                $message = display_error("Failed to change password: " . $e->getMessage());
             }
         }
     }
     
     // Handle cart actions
     if (isset($_POST['cart_action'])) {
-        $product_id = sanitize($_POST['product_id']);
+        $product_id = intval($_POST['product_id']);
         
-        if ($_POST['cart_action'] === 'remove') {
-            $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ? AND product_id = ?");
-            if ($stmt->execute([$user['id'], $product_id])) {
-                $message = display_success('Item removed from cart!');
-            } else {
-                $message = display_error('Error removing item from cart.');
+        try {
+            if ($_POST['cart_action'] === 'remove') {
+                $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ? AND product_id = ?");
+                $stmt->execute([$user['id'], $product_id]);
+                
+                $_SESSION['success_message'] = "Item removed from cart.";
+                header("Location: profile.php#cart");
+                exit;
+            } elseif ($_POST['cart_action'] === 'update') {
+                $quantity = intval($_POST['quantity']);
+                if ($quantity > 0) {
+                    $stmt = $db->prepare("UPDATE cart SET quantity = ? WHERE user_id = ? AND product_id = ?");
+                    $stmt->execute([$quantity, $user['id'], $product_id]);
+                    
+                    $_SESSION['success_message'] = "Cart updated successfully!";
+                    header("Location: profile.php#cart");
+                    exit;
+                } else {
+                    $message = display_error("Quantity must be at least 1.");
+                }
             }
-        } elseif ($_POST['cart_action'] === 'update') {
-            $quantity = (int)$_POST['quantity'];
-            $stmt = $db->prepare("UPDATE cart SET quantity = ? WHERE user_id = ? AND product_id = ?");
-            if ($stmt->execute([$quantity, $user['id'], $product_id])) {
-                $message = display_success('Cart updated!');
-            } else {
-                $message = display_error('Error updating cart.');
-            }
+        } catch (Exception $e) {
+            $message = display_error("Failed to update cart: " . $e->getMessage());
         }
     }
     
-    // Handle order actions (returns/cancellations)
-    if (isset($_POST['order_action'])) {
-        $order_id = sanitize($_POST['order_id']);
-        $action = sanitize($_POST['order_action']);
+    // Handle wishlist actions
+    if (isset($_POST['wishlist_action'])) {
+        $product_id = intval($_POST['product_id']);
         
-        if ($action === 'cancel') {
-            $stmt = $db->prepare("UPDATE orders SET status = 'cancelled' WHERE id = ? AND user_id = ?");
-            if ($stmt->execute([$order_id, $user['id']])) {
-                // Add to status history
-                $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
-                $stmt->execute([$order_id, 'cancelled', 'Customer cancelled order']);
+        try {
+            if ($_POST['wishlist_action'] === 'remove') {
+                $stmt = $db->prepare("DELETE FROM wishlist WHERE user_id = ? AND product_id = ?");
+                $stmt->execute([$user['id'], $product_id]);
                 
-                $message = display_success('Order cancelled successfully!');
-            } else {
-                $message = display_error('Error cancelling order.');
+                $_SESSION['success_message'] = "Item removed from wishlist.";
+                header("Location: profile.php#wishlist");
+                exit;
+            } elseif ($_POST['wishlist_action'] === 'add') {
+                if (!isInWishlist($db, $user['id'], $product_id)) {
+                    $stmt = $db->prepare("INSERT INTO wishlist (user_id, product_id) VALUES (?, ?)");
+                    $stmt->execute([$user['id'], $product_id]);
+                    
+                    $_SESSION['success_message'] = "Item added to wishlist!";
+                    header("Location: profile.php#wishlist");
+                    exit;
+                } else {
+                    $message = display_error("Item is already in your wishlist.");
+                }
             }
-        } elseif ($action === 'return') {
-            $result = processReturn($db, $order_id, $user['id']);
-            if ($result === true) {
-                $message = display_success('Return processed successfully! Your items will be picked up soon.');
-            } else {
-                $message = display_error($result);
+        } catch (Exception $e) {
+            $message = display_error("Failed to update wishlist: " . $e->getMessage());
+        }
+    }
+    
+    // Handle order cancellation
+    if (isset($_POST['order_action']) && $_POST['order_action'] === 'cancel') {
+        $order_id = intval($_POST['order_id']);
+        
+        try {
+            // Begin transaction
+            $db->beginTransaction();
+            
+            // Check if order belongs to user and can be cancelled
+            $stmt = $db->prepare("SELECT * FROM orders WHERE id = ? AND user_id = ? AND status IN ('pending', 'processing')");
+            $stmt->execute([$order_id, $user['id']]);
+            $order = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$order) {
+                throw new Exception("Order cannot be cancelled or doesn't belong to you.");
             }
+            
+            // Update order status
+            $stmt = $db->prepare("UPDATE orders SET status = 'cancelled' WHERE id = ?");
+            $stmt->execute([$order_id]);
+            
+            // Add to status history
+            $stmt = $db->prepare("INSERT INTO order_status_history (order_id, status, notes) VALUES (?, ?, ?)");
+            $stmt->execute([$order_id, 'cancelled', 'Customer cancelled order']);
+            
+            // Update payment status if payment exists
+            $stmt = $db->prepare("UPDATE payments SET status = 'refunded' WHERE order_id = ?");
+            $stmt->execute([$order_id]);
+            
+            // Refund to wallet if payment was from wallet
+            if ($order['payment_method'] === 'wallet') {
+                $stmt = $db->prepare("UPDATE user_wallet SET balance = balance + ? WHERE user_id = ?");
+                $stmt->execute([$order['total_amount'], $user['id']]);
+            }
+            
+            // Commit transaction
+            $db->commit();
+            
+            $_SESSION['success_message'] = "Order #$order_id has been cancelled successfully.";
+            header("Location: profile.php#orders");
+            exit;
+        } catch (Exception $e) {
+            $db->rollBack();
+            $message = display_error($e->getMessage());
         }
     }
 }
 
-// Get user's orders
-$stmt = $db->prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY order_date DESC");
-$stmt->execute([$user['id']]);
-$orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Get user's order history
+$order_history = getOrderHistory($db, $user['id']);
 
 // Get wishlist items
 $wishlist = getWishlistItems($db, $user['id']);
@@ -337,7 +526,6 @@ if ($auth->isLoggedIn()) {
     $cart_count = $stmt->fetchColumn();
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -571,6 +759,33 @@ if ($auth->isLoggedIn()) {
             to { opacity: 1; transform: translateY(0); }
         }
 
+        /* Wallet Section Styles */
+        .wallet-balance {
+            background: var(--secondary-color);
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 1.5rem;
+            text-align: center;
+            font-size: 1.2rem;
+        }
+
+        .wallet-balance strong {
+            font-size: 1.5rem;
+            color: var(--accent-color);
+        }
+
+        .wallet-transactions {
+            background: var(--secondary-color);
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+        }
+
+        .wallet-transactions h4 {
+            margin-bottom: 1rem;
+            color: var(--accent-color);
+        }
+
+        /* Form Styles */
         .form-group {
             margin-bottom: 1.5rem;
         }
@@ -937,6 +1152,158 @@ if ($auth->isLoggedIn()) {
             border-bottom: none;
         }
 
+        /* Order Details Styles */
+        .order-details {
+            background-color: var(--secondary-color);
+            border-radius: var(--border-radius);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: var(--box-shadow);
+        }
+        
+        .order-details-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .order-detail-group {
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 1rem;
+            border-radius: var(--border-radius);
+        }
+        
+        .order-detail-group h4 {
+            margin-bottom: 0.5rem;
+            color: var(--accent-color);
+            font-size: 1rem;
+        }
+        
+        .order-items {
+            margin-top: 2rem;
+        }
+        
+        .order-item {
+            display: flex;
+            align-items: center;
+            padding: 1rem;
+            border-bottom: 1px solid #444;
+            gap: 1.5rem;
+        }
+        
+        .order-item:last-child {
+            border-bottom: none;
+        }
+        
+        .order-item-image {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: var(--border-radius);
+        }
+        
+        .order-item-details {
+            flex: 1;
+        }
+        
+        .order-item-price {
+            font-weight: 600;
+            color: var(--accent-color);
+        }
+        
+        .timeline {
+            position: relative;
+            padding-left: 1.5rem;
+            margin-top: 2rem;
+        }
+        
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 7px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background-color: var(--accent-color);
+        }
+        
+        .timeline-item {
+            position: relative;
+            padding-bottom: 1.5rem;
+        }
+        
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -1.5rem;
+            top: 5px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: var(--accent-color);
+        }
+        
+        .timeline-date {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+        
+        .timeline-content {
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            margin-top: 0.5rem;
+        }
+        
+        .promo-badge {
+            display: inline-block;
+            padding: 0.3rem 0.6rem;
+            background-color: rgba(75, 181, 67, 0.2);
+            color: var(--success-color);
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Return specific styles */
+        .status-return_requested {
+            background-color: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+
+        .status-returned {
+            background-color: rgba(13, 110, 253, 0.2);
+            color: #0d6efd;
+        }
+
+        .status-refunded {
+            background-color: rgba(25, 135, 84, 0.2);
+            color: #198754;
+        }
+
+        .return-instructions {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-left: 4px solid var(--accent-color);
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: var(--border-radius);
+        }
+
+        .return-instructions h5 {
+            margin-top: 0;
+            color: var(--accent-color);
+        }
+
+        .return-instructions ol {
+            padding-left: 1.5rem;
+        }
+
+        .return-instructions li {
+            margin-bottom: 0.5rem;
+        }
+
         /* Footer */
         footer {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
@@ -1048,6 +1415,16 @@ if ($auth->isLoggedIn()) {
             .user-actions {
                 gap: 1rem;
             }
+            
+            .order-details-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .order-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 1rem;
+            }
         }
 
         @media (max-width: 576px) {
@@ -1107,6 +1484,7 @@ if ($auth->isLoggedIn()) {
             <ul>
                 <li><a href="#edit-profile" class="active"><i class="fas fa-user-edit"></i> Edit profile</a></li>
                 <li><a href="#change-password"><i class="fas fa-key"></i> Change Password</a></li>
+                <li><a href="#wallet"><i class="fas fa-wallet"></i> My Wallet (₱<?php echo number_format($user['wallet_balance'], 2); ?>)</a></li>
                 <li><a href="#cart"><i class="fas fa-shopping-cart"></i> My Cart (<?php echo $cart_count; ?>)</a></li>
                 <li><a href="#orders"><i class="fas fa-clipboard-list"></i> My Orders</a></li>
                 <li><a href="#wishlist"><i class="fas fa-heart"></i> Wishlist (<?php echo count($wishlist); ?>)</a></li>
@@ -1158,11 +1536,16 @@ if ($auth->isLoggedIn()) {
                     </div>
                     
                     <div class="form-group">
+                        <label for="phone">Phone Number</label>
+                        <input type="tel" id="phone" name="phone" value="<?php echo htmlspecialchars($user['phone'] ?? ''); ?>" required>
+                    </div>
+                    
+                    <div class="form-group">
                         <label for="address">Address</label>
                         <textarea id="address" name="address" required><?php echo htmlspecialchars($user['address']); ?></textarea>
                     </div>
                     
-                    <button type="submit" class="btn"><i class="fas fa-save"></i> Save Changes</button>
+                    <button type="submit" name="update_profile" class="btn"><i class="fas fa-save"></i> Save Changes</button>
                 </form>
             </div>
             
@@ -1172,21 +1555,43 @@ if ($auth->isLoggedIn()) {
                 <form method="POST">
                     <div class="form-group">
                         <label for="current_password">Current Password</label>
-                        <input type="password" id="current_password" name="current_password">
+                        <input type="password" id="current_password" name="current_password" required>
                     </div>
                     
                     <div class="form-group">
                         <label for="new_password">New Password</label>
-                        <input type="password" id="new_password" name="new_password">
+                        <input type="password" id="new_password" name="new_password" required minlength="8">
                     </div>
                     
                     <div class="form-group">
                         <label for="confirm_password">Confirm Password</label>
-                        <input type="password" id="confirm_password" name="confirm_password">
+                        <input type="password" id="confirm_password" name="confirm_password" required minlength="8">
                     </div>
                     
-                    <button type="submit" class="btn"><i class="fas fa-key"></i> Change Password</button>
+                    <button type="submit" name="change_password" class="btn"><i class="fas fa-key"></i> Change Password</button>
                 </form>
+            </div>
+            
+            <!-- Wallet Section -->
+            <div id="wallet" class="profile-section" style="display: none;">
+                <h3><i class="fas fa-wallet"></i> My Wallet</h3>
+                <div class="wallet-balance">
+                    <p>Current Balance: <strong>₱<?php echo number_format($user['wallet_balance'], 2); ?></strong></p>
+                </div>
+                
+                <form method="POST">
+                    <div class="form-group">
+                        <label for="fund_amount">Add Funds to Wallet</label>
+                        <input type="number" id="fund_amount" name="fund_amount" min="100" step="100" value="500" required>
+                    </div>
+                    
+                    <button type="submit" name="add_funds" class="btn"><i class="fas fa-plus-circle"></i> Add Funds</button>
+                </form>
+                
+                <div class="wallet-transactions" style="margin-top: 2rem;">
+                    <h4>Transaction History</h4>
+                    <p>Wallet transactions will appear here.</p>
+                </div>
             </div>
             
             <!-- Cart Section -->
@@ -1255,61 +1660,139 @@ if ($auth->isLoggedIn()) {
             <!-- Orders Section -->
             <div id="orders" class="profile-section" style="display: none;">
                 <h3><i class="fas fa-clipboard-list"></i> Order History</h3>
-                <?php if (empty($orders)): ?>
+                <?php if (empty($order_history)): ?>
                     <p>You haven't placed any orders yet. <a href="shop.php">Start shopping</a></p>
                 <?php else: ?>
-                    <table class="orders-table">
-                        <thead>
-                            <tr>
-                                <th>Order #</th>
-                                <th>Date</th>
-                                <th>Items</th>
-                                <th>Total</th>
-                                <th>Status</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($orders as $order): 
-                                $order_items = getOrderItems($db, $order['id']);
-                            ?>
-                                <tr>
-                                    <td><?php echo $order['id']; ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
-                                    <td>
-                                        <?php foreach ($order_items as $item): ?>
-                                            <div style="margin-bottom: 5px;">
-                                                <?php echo htmlspecialchars($item['name']); ?> 
-                                                (x<?php echo $item['quantity']; ?>)
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </td>
-                                    <td>₱<?php echo number_format($order['total_amount'], 2); ?></td>
-                                    <td>
+                    <?php foreach ($order_history as $order): ?>
+                        <div class="order-details">
+                            <div class="order-details-grid">
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-info-circle"></i> Order Information</h4>
+                                    <p><strong>Order #:</strong> <?php echo $order['id']; ?></p>
+                                    <p><strong>Date:</strong> <?php echo date('M d, Y h:i A', strtotime($order['order_date'])); ?></p>
+                                    <p><strong>Status:</strong> 
                                         <span class="status-badge status-<?php echo $order['status']; ?>">
                                             <?php echo ucfirst($order['status']); ?>
                                         </span>
-                                    </td>
-                                    <td>
-                                        <a href="order_details.php?id=<?php echo $order['id']; ?>" class="btn"><i class="fas fa-eye"></i> View</a>
-                                        <?php if ($order['status'] === 'pending' || $order['status'] === 'processing'): ?>
-                                            <form method="POST" style="display: inline-block; margin-left: 5px;">
-                                                <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
-                                                <input type="hidden" name="order_action" value="cancel">
-                                                <button type="submit" class="btn btn-danger" style="padding: 5px 10px;"><i class="fas fa-times"></i> Cancel</button>
-                                            </form>
-                                        <?php elseif (canReturnOrder($order)): ?>
-                                            <form method="POST" style="display: inline-block; margin-left: 5px;">
-                                                <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
-                                                <input type="hidden" name="order_action" value="return">
-                                                <button type="submit" class="btn btn-outline" style="padding: 5px 10px;"><i class="fas fa-exchange-alt"></i> Return</button>
-                                            </form>
-                                        <?php endif; ?>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
+                                    </p>
+                                    <?php if ($order['delivery_date']): ?>
+                                        <p><strong>Delivered:</strong> <?php echo date('M d, Y', strtotime($order['delivery_date'])); ?></p>
+                                    <?php elseif ($order['estimated_delivery']): ?>
+                                        <p><strong>Estimated Delivery:</strong> <?php echo date('M d, Y', strtotime($order['estimated_delivery'])); ?></p>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-truck"></i> Shipping Information</h4>
+                                    <?php if (!empty($order['tracking_number'])): ?>
+                                        <p><strong>Tracking #:</strong> <?php echo $order['tracking_number']; ?></p>
+                                        <p><strong>Carrier:</strong> <?php echo $order['carrier'] ?? 'N/A'; ?></p>
+                                        <p><strong>Status:</strong> 
+                                            <span class="status-badge status-<?php echo $order['shipping_status'] ?? 'processing'; ?>">
+                                                <?php echo ucfirst($order['shipping_status'] ?? 'Processing'); ?>
+                                            </span>
+                                        </p>
+                                    <?php else: ?>
+                                        <p>Shipping information will be available once your order is processed.</p>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-credit-card"></i> Payment Information</h4>
+                                    <p><strong>Method:</strong> <?php echo ucfirst(str_replace('_', ' ', $order['payment_method'] ?? 'N/A')); ?></p>
+                                    <p><strong>Status:</strong> 
+                                        <span class="status-badge status-<?php echo $order['payment_status'] ?? 'pending'; ?>">
+                                            <?php echo ucfirst($order['payment_status'] ?? 'Pending'); ?>
+                                        </span>
+                                    </p>
+                                    <?php if (!empty($order['transaction_id'])): ?>
+                                        <p><strong>Transaction ID:</strong> <?php echo $order['transaction_id']; ?></p>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            
+                            <?php if (!empty($order['promotions'])): ?>
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-tag"></i> Applied Promotions</h4>
+                                    <?php foreach ($order['promotions'] as $promo): ?>
+                                        <span class="promo-badge" title="<?php echo htmlspecialchars($promo['promo_description']); ?>">
+                                            <?php echo $promo['code']; ?> 
+                                            (<?php echo $promo['discount_type'] === 'percentage' ? $promo['discount_value'] . '%' : '₱' . number_format($promo['discount_value'], 2); ?>)
+                                        </span>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <div class="order-items">
+                                <h4><i class="fas fa-box-open"></i> Order Items</h4>
+                                <?php foreach ($order['items'] as $item): ?>
+                                    <div class="order-item">
+                                        <img src="assets/images/products/<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>" class="order-item-image">
+                                        <div class="order-item-details">
+                                            <h5><?php echo htmlspecialchars($item['name']); ?></h5>
+                                            <?php if (!empty($item['description'])): ?>
+                                                <p style="color: var(--text-muted); font-size: 0.9rem;"><?php echo htmlspecialchars($item['description']); ?></p>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div style="text-align: right;">
+                                            <p>₱<?php echo number_format($item['price'], 2); ?></p>
+                                            <p>x<?php echo $item['quantity']; ?></p>
+                                            <p class="order-item-price">₱<?php echo number_format($item['price'] * $item['quantity'], 2); ?></p>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                                
+                                <div style="text-align: right; margin-top: 1rem;">
+                                    <p><strong>Subtotal: ₱<?php echo number_format($order['total_amount'], 2); ?></strong></p>
+                                    <?php if (!empty($order['promotions'])): ?>
+                                        <?php 
+                                        $total_discount = 0;
+                                        foreach ($order['promotions'] as $promo) {
+                                            $total_discount += $promo['discount_amount'];
+                                        }
+                                        ?>
+                                        <p>Discount: -₱<?php echo number_format($total_discount, 2); ?></p>
+                                        <p><strong>Total Paid: ₱<?php echo number_format($order['total_amount'] - $total_discount, 2); ?></strong></p>
+                                    <?php else: ?>
+                                        <p><strong>Total Paid: ₱<?php echo number_format($order['total_amount'], 2); ?></strong></p>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            
+                            <div class="timeline">
+                                <h4><i class="fas fa-history"></i> Order Timeline</h4>
+                                <?php foreach ($order['status_history'] as $history): ?>
+                                    <div class="timeline-item">
+                                        <div class="timeline-date">
+                                            <?php echo date('M d, Y h:i A', strtotime($history['changed_at'])); ?>
+                                        </div>
+                                        <div class="timeline-content">
+                                            <strong><?php echo ucfirst($history['status']); ?></strong>
+                                            <?php if (!empty($history['notes'])): ?>
+                                                <p><?php echo htmlspecialchars($history['notes']); ?></p>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                            
+                            <div style="margin-top: 1.5rem;">
+                                <?php if ($order['status'] === 'pending' || $order['status'] === 'processing'): ?>
+                                    <form method="POST" style="display: inline-block;">
+                                        <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
+                                        <input type="hidden" name="order_action" value="cancel">
+                                        <button type="submit" class="btn btn-danger"><i class="fas fa-times"></i> Cancel Order</button>
+                                    </form>
+                                <?php elseif (canReturnOrder($order)): ?>
+                                    <form method="POST" style="display: inline-block; margin-left: 0.5rem;">
+                                        <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
+                                        <input type="hidden" name="order_action" value="return">
+                                        <button type="submit" class="btn btn-outline"><i class="fas fa-exchange-alt"></i> Request Return</button>
+                                    </form>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
                 <?php endif; ?>
             </div>
             
@@ -1363,44 +1846,21 @@ if ($auth->isLoggedIn()) {
             <div id="returns" class="profile-section" style="display: none;">
                 <h3><i class="fas fa-exchange-alt"></i> Returns & Refunds</h3>
                 <?php 
-                $return_orders = array_filter($orders, function($order) {
+                $return_orders = array_filter($order_history, function($order) {
                     return in_array($order['status'], ['return_requested', 'returned', 'refunded']);
                 });
                 
                 if (empty($return_orders)): ?>
                     <p>You don't have any return requests.</p>
                 <?php else: ?>
-                    <table class="orders-table">
-                        <thead>
-                            <tr>
-                                <th>Order #</th>
-                                <th>Date</th>
-                                <th>Items</th>
-                                <th>Total</th>
-                                <th>Status</th>
-                                <th>Details</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($return_orders as $order): 
-                                $order_items = getOrderItems($db, $order['id']);
-                                $status_history = $db->prepare("SELECT * FROM order_status_history WHERE order_id = ? ORDER BY changed_at DESC");
-                                $status_history->execute([$order['id']]);
-                                $history = $status_history->fetchAll(PDO::FETCH_ASSOC);
-                            ?>
-                                <tr>
-                                    <td><?php echo $order['id']; ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
-                                    <td>
-                                        <?php foreach ($order_items as $item): ?>
-                                            <div style="margin-bottom: 5px;">
-                                                <?php echo htmlspecialchars($item['name']); ?> 
-                                                (x<?php echo $item['quantity']; ?>)
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </td>
-                                    <td>₱<?php echo number_format($order['total_amount'], 2); ?></td>
-                                    <td>
+                    <?php foreach ($return_orders as $order): ?>
+                        <div class="order-details">
+                            <div class="order-details-grid">
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-info-circle"></i> Return Information</h4>
+                                    <p><strong>Order #:</strong> <?php echo $order['id']; ?></p>
+                                    <p><strong>Date:</strong> <?php echo date('M d, Y', strtotime($order['order_date'])); ?></p>
+                                    <p><strong>Status:</strong> 
                                         <span class="status-badge status-<?php echo $order['status']; ?>">
                                             <?php 
                                             $status_map = [
@@ -1411,52 +1871,125 @@ if ($auth->isLoggedIn()) {
                                             echo $status_map[$order['status']] ?? ucfirst($order['status']); 
                                             ?>
                                         </span>
-                                    </td>
-                                    <td>
-                                        <button class="btn" onclick="document.getElementById('history-<?php echo $order['id']; ?>').style.display='block'">
-                                            <i class="fas fa-history"></i> View History
-                                        </button>
-                                    </td>
-                                </tr>
-                                <tr id="history-<?php echo $order['id']; ?>" style="display: none;">
-                                    <td colspan="6">
-                                        <div class="history-details">
-                                            <h4>Status History:</h4>
-                                            <ul>
-                                                <?php foreach ($history as $entry): ?>
-                                                    <li>
-                                                        <strong><?php echo ucfirst($entry['status']); ?></strong> - 
-                                                        <?php echo date('M d, Y h:i A', strtotime($entry['changed_at'])); ?>
-                                                        <?php if ($entry['notes']): ?>
-                                                            <br><em><?php echo htmlspecialchars($entry['notes']); ?></em>
-                                                        <?php endif; ?>
-                                                    </li>
-                                                <?php endforeach; ?>
-                                            </ul>
-                                            <button class="btn btn-outline" onclick="document.getElementById('history-<?php echo $order['id']; ?>').style.display='none'">
-                                                <i class="fas fa-times"></i> Close
-                                            </button>
+                                    </p>
+                                    <?php if (!empty($order['return_ticket'])): ?>
+                                        <p><strong>Ticket #:</strong> <?php echo $order['return_ticket']['id']; ?></p>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-truck"></i> Return Shipping</h4>
+                                    <?php if (!empty($order['tracking_number'])): ?>
+                                        <p><strong>Tracking #:</strong> <?php echo $order['tracking_number']; ?></p>
+                                        <p><strong>Carrier:</strong> <?php echo $order['carrier'] ?? 'N/A'; ?></p>
+                                        <?php if ($order['status'] === 'return_requested'): ?>
+                                            <p><em>Please ship your return within 7 days using this tracking number.</em></p>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <?php if ($order['status'] === 'return_requested'): ?>
+                                            <p>Our team is preparing your return shipping label. You'll receive an email with instructions soon.</p>
+                                        <?php else: ?>
+                                            <p>Return shipping information will be provided after your return is approved.</p>
+                                        <?php endif; ?>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <div class="order-detail-group">
+                                    <h4><i class="fas fa-money-bill-wave"></i> Refund</h4>
+                                    <?php if ($order['status'] === 'refunded'): ?>
+                                        <p><strong>Status:</strong> <span class="status-badge status-refunded">Refund Completed</span></p>
+                                        <p><strong>Amount:</strong> ₱<?php echo number_format($order['total_amount'], 2); ?></p>
+                                        <p><strong>Method:</strong> <?php echo ucfirst(str_replace('_', ' ', $order['payment_method'])); ?></p>
+                                        <?php if (!empty($order['transaction_id'])): ?>
+                                            <p><strong>Reference:</strong> <?php echo $order['transaction_id']; ?></p>
+                                        <?php endif; ?>
+                                    <?php elseif ($order['status'] === 'returned'): ?>
+                                        <p><strong>Estimated Refund:</strong> ₱<?php echo number_format($order['total_amount'], 2); ?></p>
+                                        <p>Your refund will be processed within 3-5 business days after we receive your return.</p>
+                                    <?php else: ?>
+                                        <p><strong>Estimated Refund:</strong> ₱<?php echo number_format($order['total_amount'], 2); ?></p>
+                                        <p>Refund will be processed after we receive and inspect your returned items.</p>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            
+                            <div class="order-items">
+                                <h4><i class="fas fa-box-open"></i> Returned Items</h4>
+                                <?php foreach ($order['items'] as $item): ?>
+                                    <div class="order-item">
+                                        <img src="assets/images/products/<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>" class="order-item-image">
+                                        <div class="order-item-details">
+                                            <h5><?php echo htmlspecialchars($item['name']); ?></h5>
+                                            <?php if (!empty($item['description'])): ?>
+                                                <p style="color: var(--text-muted); font-size: 0.9rem;"><?php echo htmlspecialchars($item['description']); ?></p>
+                                            <?php endif; ?>
                                         </div>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
+                                        <div style="text-align: right;">
+                                            <p>₱<?php echo number_format($item['price'], 2); ?></p>
+                                            <p>x<?php echo $item['quantity']; ?></p>
+                                            <p class="order-item-price">₱<?php echo number_format($item['price'] * $item['quantity'], 2); ?></p>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                            
+                            <div class="timeline">
+                                <h4><i class="fas fa-history"></i> Return Timeline</h4>
+                                <?php foreach ($order['status_history'] as $history): ?>
+                                    <?php if (in_array($history['status'], ['return_requested', 'returned', 'refunded'])): ?>
+                                        <div class="timeline-item">
+                                            <div class="timeline-date">
+                                                <?php echo date('M d, Y h:i A', strtotime($history['changed_at'])); ?>
+                                            </div>
+                                            <div class="timeline-content">
+                                                <strong>
+                                                    <?php 
+                                                    echo $status_map[$history['status']] ?? ucfirst($history['status']); 
+                                                    ?>
+                                                </strong>
+                                                <?php if (!empty($history['notes'])): ?>
+                                                    <p><?php echo htmlspecialchars($history['notes']); ?></p>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
+                                <?php endforeach; ?>
+                            </div>
+                            
+                            <?php if ($order['status'] === 'returned' && $order['payment_method'] === 'wallet'): ?>
+                                <div style="margin-top: 1.5rem;">
+                                    <form method="POST">
+                                        <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
+                                        <input type="hidden" name="refund_action" value="process_refund">
+                                        <button type="submit" class="btn"><i class="fas fa-money-bill-wave"></i> Process Refund to Wallet</button>
+                                    </form>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
                 <?php endif; ?>
                 
-                <div style="margin-top: 30px;">
+                <div class="return-instructions">
                     <h4><i class="fas fa-info-circle"></i> Return Policy</h4>
                     <p>Our return policy allows you to return items within 30 days of delivery for a full refund. Items must be in their original condition with all tags attached. Please contact our support team if you have any questions about returns.</p>
                     
                     <h5>How to Return an Item:</h5>
                     <ol>
-                        <li>Click the "Return" button on your delivered order</li>
-                        <li>Wait for our team to approve your return request</li>
+                        <li>Click the "Request Return" button on your delivered order</li>
+                        <li>Wait for our team to approve your return request (1-2 business days)</li>
                         <li>You'll receive a return shipping label via email</li>
-                        <li>Pack the items securely and attach the label</li>
-                        <li>Drop off the package at any courier location</li>
-                        <li>Once received, we'll process your refund within 3-5 business days</li>
+                        <li>Pack the items securely in their original packaging</li>
+                        <li>Attach the return label and drop off the package at any courier location</li>
+                        <li>Once received and inspected, we'll process your refund within 3-5 business days</li>
                     </ol>
+                    
+                    <h5>Refund Methods:</h5>
+                    <ul>
+                        <li><strong>Credit/Debit Card:</strong> Refunded to original payment method (5-10 business days)</li>
+                        <li><strong>E-wallets (GCash, Paypal):</strong> Refunded within 3 business days</li>
+                        <li><strong>Wallet Balance:</strong> Refunded immediately to your account wallet</li>
+                        <li><strong>Cash on Delivery:</strong> Bank transfer refund (provide details via support ticket)</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -1490,8 +2023,8 @@ if ($auth->isLoggedIn()) {
                 <h3>Customer Service</h3>
                 <ul>
                     <li><a href="profile.php"><i class="fas fa-chevron-right"></i> My Account</a></li>
-                    <li><a href="orders.php"><i class="fas fa-chevron-right"></i> Order Tracking</a></li>
-                    <li><a href="returns.php"><i class="fas fa-chevron-right"></i> Returns & Refunds</a></li>
+                    <li><a href="#orders"><i class="fas fa-chevron-right"></i> Order Tracking</a></li>
+                    <li><a href="#returns"><i class="fas fa-chevron-right"></i> Returns & Refunds</a></li>
                     <li><a href="privacy.php"><i class="fas fa-chevron-right"></i> Privacy Policy</a></li>
                     <li><a href="terms.php"><i class="fas fa-chevron-right"></i> Terms & Conditions</a></li>
                 </ul>
@@ -1542,6 +2075,12 @@ if ($auth->isLoggedIn()) {
                 setTimeout(() => {
                     section.style.animation = 'fadeIn 0.5s ease';
                 }, 10);
+                
+                // Scroll to top of the section
+                window.scrollTo({
+                    top: section.offsetTop - 20,
+                    behavior: 'smooth'
+                });
             });
         });
         
@@ -1550,7 +2089,7 @@ if ($auth->isLoggedIn()) {
             fetch('get_cart_count.php')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('cart-counter').textContent = data.count;
+                    document.querySelector('.cart-count span').textContent = data.count;
                 })
                 .catch(error => {
                     console.error('Error fetching cart count:', error);
@@ -1567,7 +2106,7 @@ if ($auth->isLoggedIn()) {
                 const form = this.closest('form');
                 const formData = new FormData(form);
                 
-                fetch(form.action, {
+                fetch('profile.php', {
                     method: 'POST',
                     body: formData
                 })
@@ -1612,6 +2151,166 @@ if ($auth->isLoggedIn()) {
                 });
             });
         });
+
+        // Handle return request button clicks
+        document.querySelectorAll('[name="order_action"][value="return"]').forEach(button => {
+            button.addEventListener('click', function(e) {
+                if (!confirm('Are you sure you want to request a return for this order?')) {
+                    e.preventDefault();
+                    return;
+                }
+                
+                const form = this.closest('form');
+                const formData = new FormData(form);
+                
+                fetch('profile.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (response.redirected) {
+                        window.location.href = response.url;
+                    } else {
+                        return response.text();
+                    }
+                })
+                .then(() => {
+                    window.location.href = 'profile.php#returns';
+                });
+            });
+        });
+
+        // Handle refund button clicks
+        document.querySelectorAll('[name="refund_action"][value="process_refund"]').forEach(button => {
+            button.addEventListener('click', function(e) {
+                if (!confirm('Are you sure you want to process this refund?')) {
+                    e.preventDefault();
+                    return;
+                }
+                
+                const form = this.closest('form');
+                const formData = new FormData(form);
+                
+                fetch('profile.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (response.redirected) {
+                        window.location.href = response.url;
+                    } else {
+                        return response.text();
+                    }
+                })
+                .then(() => {
+                    window.location.href = 'profile.php#returns';
+                });
+            });
+        });
+
+        // Real-time order status updates
+        function checkOrderStatus(orderId) {
+            fetch('get_order_status.php?order_id=' + orderId)
+                .then(response => response.json())
+                .then(data => {
+                    const statusElement = document.querySelector(`.order-status-${orderId}`);
+                    if (statusElement && data.status) {
+                        // Update status badge
+                        statusElement.className = `status-badge status-${data.status}`;
+                        statusElement.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+                        
+                        // Update timeline if needed
+                        if (data.newStatus) {
+                            const timeline = document.querySelector(`.timeline-${orderId}`);
+                            if (timeline) {
+                                const newItem = document.createElement('div');
+                                newItem.className = 'timeline-item';
+                                newItem.innerHTML = `
+                                    <div class="timeline-date">Just now</div>
+                                    <div class="timeline-content">
+                                        <strong>${data.newStatus.title}</strong>
+                                        ${data.newStatus.notes ? `<p>${data.newStatus.notes}</p>` : ''}
+                                    </div>
+                                `;
+                                timeline.prepend(newItem);
+                            }
+                        }
+                    }
+                })
+                .catch(error => console.error('Error checking order status:', error));
+        }
+
+        // Check status every 30 seconds for pending/processing orders
+        document.querySelectorAll('.order-status-pending, .order-status-processing').forEach(element => {
+            const orderId = element.dataset.orderId;
+            if (orderId) {
+                checkOrderStatus(orderId);
+                setInterval(() => checkOrderStatus(orderId), 30000); // Every 30 seconds
+            }
+        });
+
+        // Real-time return status updates
+        function checkReturnStatus(orderId) {
+            fetch('get_order_status.php?order_id=' + orderId)
+                .then(response => response.json())
+                .then(data => {
+                    const statusElement = document.querySelector(`.return-status-${orderId}`);
+                    if (statusElement && data.status) {
+                        // Update status badge
+                        statusElement.className = `status-badge status-${data.status}`;
+                        const statusMap = {
+                            'return_requested': 'Return Requested',
+                            'returned': 'Returned - Pending Refund',
+                            'refunded': 'Refund Processed'
+                        };
+                        statusElement.textContent = statusMap[data.status] || data.status;
+                        
+                        // Update timeline if needed
+                        if (data.newStatus) {
+                            const timeline = document.querySelector(`.return-timeline-${orderId}`);
+                            if (timeline) {
+                                const newItem = document.createElement('div');
+                                newItem.className = 'timeline-item';
+                                newItem.innerHTML = `
+                                    <div class="timeline-date">Just now</div>
+                                    <div class="timeline-content">
+                                        <strong>${statusMap[data.newStatus.title] || data.newStatus.title}</strong>
+                                        ${data.newStatus.notes ? `<p>${data.newStatus.notes}</p>` : ''}
+                                    </div>
+                                `;
+                                timeline.prepend(newItem);
+                            }
+                        }
+                    }
+                })
+                .catch(error => console.error('Error checking return status:', error));
+        }
+
+        // Check status every 30 seconds for pending returns
+        document.querySelectorAll('.return-status-return_requested, .return-status-returned').forEach(element => {
+            const orderId = element.dataset.orderId;
+            if (orderId) {
+                checkReturnStatus(orderId);
+                setInterval(() => checkReturnStatus(orderId), 30000); // Every 30 seconds
+            }
+        });
+
+        // Check if URL has hash and show corresponding section
+        function checkUrlHash() {
+            if (window.location.hash) {
+                const hash = window.location.hash;
+                const link = document.querySelector(`.profile-sidebar a[href="${hash}"]`);
+                if (link) {
+                    link.click();
+                }
+            }
+        }
+
+        // Run on page load
+        window.addEventListener('load', checkUrlHash);
+        
+        // Also run when hash changes
+        window.addEventListener('hashchange', checkUrlHash);
     </script>
 </body>
 </html>

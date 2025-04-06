@@ -50,7 +50,7 @@ if (isset($_GET['logout'])) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Urban Trends Apparel - Home</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -69,6 +69,8 @@ if (isset($_GET['logout'])) {
             --border-radius: 8px;
             --box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
             --transition: all 0.3s ease;
+            --header-height: 70px;
+            --footer-height: auto;
         }
 
         * {
@@ -77,41 +79,60 @@ if (isset($_GET['logout'])) {
             box-sizing: border-box;
         }
 
+        html {
+            scroll-behavior: smooth;
+        }
+
         body {
             font-family: 'Poppins', sans-serif;
             background-color: var(--dark-color);
             color: var(--text-color);
             line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
         }
 
-        /* Updated Header Styles */
+        /* Container for responsive content */
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 15px;
+        }
+
+        /* Header with mobile menu */
         header {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
             color: white;
-            padding: 1rem 2rem;
+            padding: 0;
             box-shadow: var(--box-shadow);
             position: sticky;
             top: 0;
             z-index: 1000;
+            height: var(--header-height);
         }
 
         .header-container {
             width: 100%;
+            height: 100%;
             max-width: 1200px;
             margin: 0 auto;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 0 15px;
         }
 
         .logo-nav-container {
             display: flex;
             align-items: center;
-            gap: 3rem;
+            gap: 2rem;
+            height: 100%;
         }
 
         .logo {
-            font-size: 1.8rem;
+            font-size: 1.5rem;
             font-weight: 700;
             display: flex;
             align-items: center;
@@ -135,10 +156,33 @@ if (isset($_GET['logout'])) {
             100% { transform: scale(1); }
         }
 
+        /* Mobile menu toggle */
+        .menu-toggle {
+            display: none;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 10px;
+        }
+
+        nav {
+            height: 100%;
+        }
+
         nav ul {
             display: flex;
             list-style: none;
-            gap: 2rem;
+            gap: 1rem;
+            height: 100%;
+            margin: 0;
+        }
+
+        nav li {
+            height: 100%;
+            display: flex;
+            align-items: center;
         }
 
         nav a {
@@ -152,6 +196,8 @@ if (isset($_GET['logout'])) {
             display: flex;
             align-items: center;
             gap: 8px;
+            height: 100%;
+            align-items: center;
         }
 
         nav a:hover {
@@ -177,7 +223,7 @@ if (isset($_GET['logout'])) {
         .auth-actions {
             display: flex;
             align-items: center;
-            gap: 1.5rem;
+            gap: 1rem;
         }
 
         .auth-actions a {
@@ -219,10 +265,13 @@ if (isset($_GET['logout'])) {
 
         /* Hero Section */
         .hero {
-            height: 80vh;
+            height: calc(100vh - var(--header-height));
+            min-height: 500px;
+            max-height: 800px;
             background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), url('https://images.unsplash.com/photo-1483985988355-763728e1935b?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2070&q=80');
             background-size: cover;
             background-position: center;
+            background-attachment: fixed;
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -231,6 +280,7 @@ if (isset($_GET['logout'])) {
             color: white;
             margin-bottom: 3rem;
             position: relative;
+            padding: 0 15px;
         }
 
         .hero::before {
@@ -252,7 +302,7 @@ if (isset($_GET['logout'])) {
         }
 
         .hero h2 {
-            font-size: 2rem;
+            font-size: clamp(1.2rem, 4vw, 2rem);
             margin-bottom: 1rem;
             font-weight: 300;
             letter-spacing: 2px;
@@ -260,7 +310,7 @@ if (isset($_GET['logout'])) {
         }
 
         .hero h1 {
-            font-size: 4rem;
+            font-size: clamp(2rem, 8vw, 4rem);
             margin-bottom: 2rem;
             font-weight: 700;
             letter-spacing: 3px;
@@ -277,7 +327,7 @@ if (isset($_GET['logout'])) {
             color: white;
             border: none;
             border-radius: var(--border-radius);
-            font-size: 1.2rem;
+            font-size: clamp(1rem, 2vw, 1.2rem);
             cursor: pointer;
             transition: var(--transition);
             text-decoration: none;
@@ -295,6 +345,7 @@ if (isset($_GET['logout'])) {
         /* Featured Categories */
         .featured-categories {
             padding: 3rem 0;
+            flex: 1;
         }
 
         .section-title {
@@ -304,7 +355,7 @@ if (isset($_GET['logout'])) {
         }
 
         .section-title h2 {
-            font-size: 2.5rem;
+            font-size: clamp(1.8rem, 4vw, 2.5rem);
             color: var(--text-color);
             display: inline-block;
             position: relative;
@@ -325,6 +376,7 @@ if (isset($_GET['logout'])) {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 2rem;
+            padding: 0 15px;
         }
 
         .category-card {
@@ -344,6 +396,11 @@ if (isset($_GET['logout'])) {
             width: 100%;
             height: 100%;
             object-fit: cover;
+            transition: transform 0.5s ease;
+        }
+
+        .category-card:hover .category-image {
+            transform: scale(1.05);
         }
 
         .category-overlay {
@@ -360,7 +417,7 @@ if (isset($_GET['logout'])) {
         }
 
         .category-name {
-            font-size: 1.5rem;
+            font-size: clamp(1.2rem, 3vw, 1.5rem);
             font-weight: 600;
             color: white;
             margin-bottom: 0.5rem;
@@ -385,8 +442,8 @@ if (isset($_GET['logout'])) {
         footer {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
             color: white;
-            padding: 3rem 0;
-            margin-top: 3rem;
+            padding: 3rem 0 0;
+            margin-top: auto;
         }
 
         .footer-content {
@@ -394,6 +451,7 @@ if (isset($_GET['logout'])) {
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 2rem;
             margin-bottom: 2rem;
+            padding: 0 15px;
         }
 
         .footer-column h3 {
@@ -469,93 +527,158 @@ if (isset($_GET['logout'])) {
 
         .copyright {
             text-align: center;
-            padding-top: 2rem;
+            padding: 2rem 15px;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
             color: var(--text-muted);
             font-size: 0.9rem;
         }
 
-        /* Responsive */
+        /* Responsive Design */
         @media (max-width: 992px) {
-            .hero h1 {
-                font-size: 3rem;
+            .categories-grid {
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            }
+            
+            .auth-actions a span {
+                display: none;
+            }
+            
+            .auth-actions a i {
+                font-size: 1.2rem;
             }
         }
 
         @media (max-width: 768px) {
-            header {
-                padding: 1rem;
+            .menu-toggle {
+                display: block;
             }
-
-            .header-container {
-                flex-direction: column;
-                gap: 1rem;
+            
+            nav {
+                position: fixed;
+                top: var(--header-height);
+                left: -100%;
+                width: 80%;
+                max-width: 300px;
+                height: calc(100vh - var(--header-height));
+                background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+                transition: var(--transition);
+                z-index: 999;
+                box-shadow: 5px 0 15px rgba(0,0,0,0.3);
             }
-
-            .logo-nav-container {
-                width: 100%;
-                justify-content: space-between;
-                gap: 1rem;
+            
+            nav.active {
+                left: 0;
             }
-
+            
             nav ul {
-                flex-wrap: wrap;
-                justify-content: center;
+                flex-direction: column;
+                height: auto;
+                padding: 1rem;
+                gap: 0;
             }
-
-            .auth-actions {
+            
+            nav li {
+                height: auto;
                 width: 100%;
-                justify-content: center;
-                margin-top: 1rem;
             }
-
-            .hero h1 {
-                font-size: 2.5rem;
+            
+            nav a {
+                padding: 1rem;
+                width: 100%;
+                justify-content: flex-start;
             }
-
-            .hero h2 {
-                font-size: 1.5rem;
+            
+            .hero {
+                background-attachment: scroll;
+            }
+            
+            .footer-content {
+                grid-template-columns: 1fr 1fr;
             }
         }
 
         @media (max-width: 576px) {
-            .hero h1 {
-                font-size: 2rem;
+            .logo {
+                font-size: 1.3rem;
             }
-
-            .hero h2 {
-                font-size: 1.2rem;
+            
+            .hero {
+                min-height: 400px;
             }
-
-            .shop-btn {
-                padding: 0.8rem 1.5rem;
-                font-size: 1rem;
+            
+            .categories-grid {
+                grid-template-columns: 1fr;
             }
-
-            .section-title h2 {
-                font-size: 2rem;
+            
+            .footer-content {
+                grid-template-columns: 1fr;
             }
+            
+            .auth-actions {
+                gap: 0.5rem;
+            }
+            
+            .auth-actions a {
+                padding: 0.5rem;
+            }
+        }
 
-            .auth-actions a span,
-            nav a span {
+        /* Very small devices (phones, 360px and down) */
+        @media (max-width: 360px) {
+            .logo span {
                 display: none;
             }
-
-            .auth-actions a i,
-            nav a i {
-                font-size: 1.2rem;
+            
+            .logo i {
+                font-size: 1.5rem;
             }
+            
+            .hero h1 {
+                font-size: 1.8rem;
+            }
+            
+            .shop-btn {
+                padding: 0.8rem 1.5rem;
+            }
+        }
+
+        /* Accessibility improvements */
+        a:focus, button:focus {
+            outline: 2px solid var(--accent-color);
+            outline-offset: 2px;
+        }
+
+        /* Skip to content link for accessibility */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: var(--accent-color);
+            color: white;
+            padding: 8px;
+            z-index: 100;
+            transition: top 0.3s;
+        }
+
+        .skip-link:focus {
+            top: 0;
         }
     </style>
 </head>
 <body>
+    <!-- Skip to content link for accessibility -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
     <header>
         <div class="header-container">
             <div class="logo-nav-container">
+                <button class="menu-toggle" aria-label="Toggle navigation menu">
+                    <i class="fas fa-bars"></i>
+                </button>
                 <div class="logo">
-                    <a href="index.php"><i class="fas fa-tshirt"></i> Urban Trends</a>
+                    <a href="index.php"><i class="fas fa-tshirt"></i> <span>Urban Trends</span></a>
                 </div>
-                <nav>
+                <nav id="main-nav">
                     <ul>
                         <li><a href="index.php"><i class="fas fa-home"></i> <span>Home</span></a></li>
                         <li><a href="shop.php"><i class="fas fa-store"></i> <span>Shop</span></a></li>
@@ -567,90 +690,92 @@ if (isset($_GET['logout'])) {
             
             <div class="auth-actions">
                 <?php if ($auth->isLoggedIn()): ?>
-                    <a href="profile.php" title="Profile">
+                    <a href="profile.php" title="Profile" aria-label="Profile">
                         <i class="fas fa-user"></i>
                         <span>Profile</span>
                     </a>
-                    <a href="?logout=1" title="Logout">
+                    <a href="?logout=1" title="Logout" aria-label="Logout">
                         <i class="fas fa-sign-out-alt"></i>
                         <span>Logout</span>
                     </a>
                     <?php if ($auth->isAdmin()): ?>
-                        <a href="admin/dashboard.php" title="Admin">
+                        <a href="admin/dashboard.php" title="Admin" aria-label="Admin Dashboard">
                             <i class="fas fa-cog"></i>
                             <span>Admin</span>
                         </a>
                     <?php endif; ?>
                 <?php else: ?>
-                    <a href="login.php" title="Login">
+                    <a href="login.php" title="Login" aria-label="Login">
                         <i class="fas fa-sign-in-alt"></i>
                         <span>Login</span>
                     </a>
-                    <a href="register.php" title="Register">
+                    <a href="register.php" title="Register" aria-label="Register">
                         <i class="fas fa-user-plus"></i>
                         <span>Register</span>
                     </a>
                 <?php endif; ?>
-               
+                
             </div>
         </div>
     </header>
 
-    <section class="hero">
-        <div class="hero-content">
-            <h2>WELCOME TO</h2>
-            <h1>URBAN TRENDS</h1>
-            <a href="shop.php" class="shop-btn">
-                <i class="fas fa-shopping-bag"></i> SHOP NOW
-            </a>
-        </div>
-    </section>
+    <main id="main-content">
+        <section class="hero">
+            <div class="hero-content">
+                <h2>WELCOME TO</h2>
+                <h1>URBAN TRENDS</h1>
+                <a href="shop.php" class="shop-btn">
+                    <i class="fas fa-shopping-bag"></i> SHOP NOW
+                </a>
+            </div>
+        </section>
 
-    <section class="featured-categories">
-        <div class="container">
-            <div class="section-title">
-                <h2>SHOP BY CATEGORY</h2>
+        <section class="featured-categories">
+            <div class="container">
+                <div class="section-title">
+                    <h2>SHOP BY CATEGORY</h2>
+                </div>
+                <div class="categories-grid">
+                    <div class="category-card">
+                        <img src="https://images.unsplash.com/photo-1529374255404-311a2a4f1fd9?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1854&q=80" alt="Men's Fashion" class="category-image">
+                        <div class="category-overlay">
+                            <h3 class="category-name">Men's Fashion</h3>
+                            <a href="shop.php?category=men" class="category-link">
+                                Shop Now <i class="fas fa-arrow-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="category-card">
+                        <img src="https://images.unsplash.com/photo-1551232864-3f0890e580d9?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1887&q=80" alt="Women's Fashion" class="category-image">
+                        <div class="category-overlay">
+                            <h3 class="category-name">Women's Fashion</h3>
+                            <a href="shop.php?category=women" class="category-link">
+                                Shop Now <i class="fas fa-arrow-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="category-card">
+                        <img src="https://images.unsplash.com/photo-1600269452121-4f2416e55c28?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1965&q=80" alt="Footwear" class="category-image">
+                        <div class="category-overlay">
+                            <h3 class="category-name">Footwear</h3>
+                            <a href="shop.php?category=shoes" class="category-link">
+                                Shop Now <i class="fas fa-arrow-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="category-card">
+                        <img src="https://images.unsplash.com/photo-1592155931584-901ac15763e3?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1875&q=80" alt="Accessories" class="category-image">
+                        <div class="category-overlay">
+                            <h3 class="category-name">Accessories</h3>
+                            <a href="shop.php?category=accessories" class="category-link">
+                                Shop Now <i class="fas fa-arrow-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="categories-grid">
-                <div class="category-card">
-                    <img src="https://images.unsplash.com/photo-1529374255404-311a2a4f1fd9?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1854&q=80" alt="Men's Fashion" class="category-image">
-                    <div class="category-overlay">
-                        <h3 class="category-name">Men's Fashion</h3>
-                        <a href="shop.php?category=men" class="category-link">
-                            Shop Now <i class="fas fa-arrow-right"></i>
-                        </a>
-                    </div>
-                </div>
-                <div class="category-card">
-                    <img src="https://images.unsplash.com/photo-1551232864-3f0890e580d9?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1887&q=80" alt="Women's Fashion" class="category-image">
-                    <div class="category-overlay">
-                        <h3 class="category-name">Women's Fashion</h3>
-                        <a href="shop.php?category=women" class="category-link">
-                            Shop Now <i class="fas fa-arrow-right"></i>
-                        </a>
-                    </div>
-                </div>
-                <div class="category-card">
-                    <img src="https://images.unsplash.com/photo-1600269452121-4f2416e55c28?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1965&q=80" alt="Footwear" class="category-image">
-                    <div class="category-overlay">
-                        <h3 class="category-name">Footwear</h3>
-                        <a href="shop.php?category=shoes" class="category-link">
-                            Shop Now <i class="fas fa-arrow-right"></i>
-                        </a>
-                    </div>
-                </div>
-                <div class="category-card">
-                    <img src="https://images.unsplash.com/photo-1592155931584-901ac15763e3?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1875&q=80" alt="Accessories" class="category-image">
-                    <div class="category-overlay">
-                        <h3 class="category-name">Accessories</h3>
-                        <a href="shop.php?category=accessories" class="category-link">
-                            Shop Now <i class="fas fa-arrow-right"></i>
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
+        </section>
+    </main>
 
     <footer>
         <div class="container">
@@ -659,10 +784,10 @@ if (isset($_GET['logout'])) {
                     <h3>About Urban Trends</h3>
                     <p>Your premier destination for the latest in urban fashion trends. We offer high-quality apparel and accessories for the modern urban lifestyle.</p>
                     <div class="social-links">
-                        <a href="#"><i class="fab fa-facebook-f"></i></a>
-                        <a href="#"><i class="fab fa-twitter"></i></a>
-                        <a href="#"><i class="fab fa-instagram"></i></a>
-                        <a href="#"><i class="fab fa-pinterest"></i></a>
+                        <a href="#" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>
+                        <a href="#" aria-label="Twitter"><i class="fab fa-twitter"></i></a>
+                        <a href="#" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
+                        <a href="#" aria-label="Pinterest"><i class="fab fa-pinterest"></i></a>
                     </div>
                 </div>
                 <div class="footer-column">
@@ -679,8 +804,8 @@ if (isset($_GET['logout'])) {
                     <h3>Customer Service</h3>
                     <ul>
                         <li><a href="profile.php"><i class="fas fa-chevron-right"></i> My Account</a></li>
-                        <li><a href="orders.php"><i class="fas fa-chevron-right"></i> Order Tracking</a></li>
-                        <li><a href="returns.php"><i class="fas fa-chevron-right"></i> Returns & Refunds</a></li>
+                        <li><a href="profile.php#orders"><i class="fas fa-chevron-right"></i> Order Tracking</a></li>
+                        <li><a href="profile.php#returns"><i class="fas fa-chevron-right"></i> Returns & Refunds</a></li>
                         <li><a href="privacy.php"><i class="fas fa-chevron-right"></i> Privacy Policy</a></li>
                         <li><a href="terms.php"><i class="fas fa-chevron-right"></i> Terms & Conditions</a></li>
                     </ul>
@@ -702,6 +827,23 @@ if (isset($_GET['logout'])) {
     </footer>
 
     <script>
+        // Mobile menu toggle
+        const menuToggle = document.querySelector('.menu-toggle');
+        const mainNav = document.querySelector('#main-nav');
+        
+        menuToggle.addEventListener('click', () => {
+            mainNav.classList.toggle('active');
+            menuToggle.setAttribute('aria-expanded', mainNav.classList.contains('active'));
+        });
+        
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!mainNav.contains(e.target) && !menuToggle.contains(e.target)) {
+                mainNav.classList.remove('active');
+                menuToggle.setAttribute('aria-expanded', 'false');
+            }
+        });
+        
         // Update cart counter
         function updateCartCounter() {
             fetch('get_cart_count.php')
@@ -716,6 +858,23 @@ if (isset($_GET['logout'])) {
 
         // Initialize cart counter
         updateCartCounter();
+        
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                
+                const targetId = this.getAttribute('href');
+                if (targetId === '#') return;
+                
+                const targetElement = document.querySelector(targetId);
+                if (targetElement) {
+                    targetElement.scrollIntoView({
+                        behavior: 'smooth'
+                    });
+                }
+            });
+        });
     </script>
 </body>
 </html>

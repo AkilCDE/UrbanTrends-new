@@ -67,52 +67,71 @@ if (isset($_GET['logout'])) {
 
 // Handle Add to Cart and Buy Now actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['add_to_cart'])) {
+    if (isset($_POST['add_to_cart']) || isset($_POST['buy_now'])) {
         $product_id = $_POST['product_id'];
         $quantity = isset($_POST['quantity']) ? max(1, (int)$_POST['quantity']) : 1;
         
         try {
-            // Check if product already in cart
-            $stmt = $db->prepare("SELECT * FROM cart WHERE user_id = ? AND product_id = ?");
-            $stmt->execute([$_SESSION['user_id'], $product_id]);
-            $existing_item = $stmt->fetch();
+            // Check product stock
+            $stmt = $db->prepare("SELECT stock FROM products WHERE id = ?");
+            $stmt->execute([$product_id]);
+            $product = $stmt->fetch();
             
-            if ($existing_item) {
-                // Update quantity if already in cart
-                $stmt = $db->prepare("UPDATE cart SET quantity = quantity + ? WHERE id = ?");
-                $stmt->execute([$quantity, $existing_item['id']]);
-            } else {
-                // Add new item to cart
-                $stmt = $db->prepare("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)");
-                $stmt->execute([$_SESSION['user_id'], $product_id, $quantity]);
+            if (!$product || $product['stock'] <= 0) {
+                $_SESSION['error_message'] = "This product is out of stock";
+                header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
+                exit;
             }
             
-            $_SESSION['success_message'] = "Product added to cart successfully!";
-        } catch (PDOException $e) {
-            $_SESSION['error_message'] = "Error adding product to cart: " . $e->getMessage();
-        }
-        
-        header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
-        exit;
-    }
-    
-    if (isset($_POST['buy_now'])) {
-        $product_id = $_POST['product_id'];
-        $quantity = isset($_POST['quantity']) ? max(1, (int)$_POST['quantity']) : 1;
-        
-        try {
-            // Clear current cart (optional, depends on your business logic)
-            $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ?");
-            $stmt->execute([$_SESSION['user_id']]);
+            if ($quantity > $product['stock']) {
+                $_SESSION['error_message'] = "Only {$product['stock']} items available in stock";
+                header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
+                exit;
+            }
             
-            // Add the selected product to cart
-            $stmt = $db->prepare("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)");
-            $stmt->execute([$_SESSION['user_id'], $product_id, $quantity]);
+            if (isset($_POST['add_to_cart'])) {
+                // Check if product already in cart
+                $stmt = $db->prepare("SELECT * FROM cart WHERE user_id = ? AND product_id = ?");
+                $stmt->execute([$_SESSION['user_id'], $product_id]);
+                $existing_item = $stmt->fetch();
+                
+                if ($existing_item) {
+                    // Update quantity if already in cart
+                    $new_quantity = $existing_item['quantity'] + $quantity;
+                    if ($new_quantity > $product['stock']) {
+                        $_SESSION['error_message'] = "You can't add more than available stock";
+                        header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
+                        exit;
+                    }
+                    
+                    $stmt = $db->prepare("UPDATE cart SET quantity = quantity + ? WHERE id = ?");
+                    $stmt->execute([$quantity, $existing_item['id']]);
+                } else {
+                    // Add new item to cart
+                    $stmt = $db->prepare("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)");
+                    $stmt->execute([$_SESSION['user_id'], $product_id, $quantity]);
+                }
+                
+                $_SESSION['success_message'] = "Product added to cart successfully!";
+            }
             
-            header("Location: checkout.php");
+            if (isset($_POST['buy_now'])) {
+                // Clear current cart (optional, depends on your business logic)
+                $stmt = $db->prepare("DELETE FROM cart WHERE user_id = ?");
+                $stmt->execute([$_SESSION['user_id']]);
+                
+                // Add the selected product to cart
+                $stmt = $db->prepare("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)");
+                $stmt->execute([$_SESSION['user_id'], $product_id, $quantity]);
+                
+                header("Location: checkout.php");
+                exit;
+            }
+            
+            header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
             exit;
         } catch (PDOException $e) {
-            $_SESSION['error_message'] = "Error processing your order: " . $e->getMessage();
+            $_SESSION['error_message'] = "Error processing your request: " . $e->getMessage();
             header("Location: shop.php" . (isset($_GET['category']) ? '?category='.$_GET['category'] : ''));
             exit;
         }
@@ -160,7 +179,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Get products with category filtering
+// Get products with category filtering and stock check
 $category = isset($_GET['category']) ? $_GET['category'] : null;
 
 // Map the category parameter to database values
@@ -173,12 +192,12 @@ $category_mapping = [
 
 $db_category = isset($category_mapping[$category]) ? $category_mapping[$category] : null;
 
-// Get products
-$query = "SELECT * FROM products";
+// Get products - only those with stock > 0
+$query = "SELECT * FROM products WHERE stock > 0";
 $params = [];
 
 if ($db_category) {
-    $query .= " WHERE category = ?";
+    $query .= " AND category = ?";
     $params[] = $db_category;
 }
 
@@ -507,6 +526,28 @@ function isInWishlist($db, $user_id, $product_id) {
             z-index: 2;
         }
 
+        .out-of-stock-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1;
+        }
+        
+        .out-of-stock-overlay span {
+            color: white;
+            font-weight: bold;
+            font-size: 1.2rem;
+            background-color: var(--error-color);
+            padding: 0.5rem 1rem;
+            border-radius: var(--border-radius);
+        }
+
         .product-image-container {
             height: 300px;
             position: relative;
@@ -598,6 +639,12 @@ function isInWishlist($db, $user_id, $product_id) {
         .wishlist-btn:hover, .wishlist-btn.active {
             color: var(--accent-color);
             background-color: rgba(255, 107, 107, 0.1);
+        }
+
+        button[disabled] {
+            opacity: 0.6;
+            cursor: not-allowed;
+            background-color: #666 !important;
         }
 
         /* Quick View Modal */
@@ -1061,9 +1108,14 @@ function isInWishlist($db, $user_id, $product_id) {
             <div class="products-grid" id="productsContainer">
                 <?php foreach ($products as $product): ?>
                     <div class="product-card" data-id="<?php echo $product['id']; ?>">
-                        <?php if($product['stock'] < 10): ?>
+                        <?php if($product['stock'] <= 0): ?>
+                            <div class="out-of-stock-overlay">
+                                <span>OUT OF STOCK</span>
+                            </div>
+                        <?php elseif($product['stock'] < 10): ?>
                             <span class="product-badge">Only <?php echo $product['stock']; ?> left</span>
                         <?php endif; ?>
+                        
                         <div class="product-image-container">
                             <img src="assets/images/products/<?php echo htmlspecialchars($product['image']); ?>" alt="<?php echo htmlspecialchars($product['name']); ?>" class="product-image">
                         </div>
@@ -1071,18 +1123,25 @@ function isInWishlist($db, $user_id, $product_id) {
                             <h3 class="product-name"><?php echo htmlspecialchars($product['name']); ?></h3>
                             <p class="product-price">₱<?php echo number_format($product['price'], 2); ?></p>
                             <div class="product-actions">
-                                <form method="POST" style="display: inline;">
-                                    <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
-                                    <button type="submit" name="buy_now" class="action-btn buy-now">
-                                        <i class="fas fa-bolt"></i> Buy Now
+                                <?php if($product['stock'] > 0): ?>
+                                    <form method="POST" style="display: inline;">
+                                        <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                                        <button type="submit" name="buy_now" class="action-btn buy-now">
+                                            <i class="fas fa-bolt"></i> Buy Now
+                                        </button>
+                                    </form>
+                                    <form method="POST" style="display: inline;">
+                                        <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                                        <button type="submit" name="add_to_cart" class="action-btn add-to-cart">
+                                            <i class="fas fa-cart-plus"></i> Add to Cart
+                                        </button>
+                                    </form>
+                                <?php else: ?>
+                                    <button class="action-btn buy-now" disabled>
+                                        <i class="fas fa-ban"></i> Out of Stock
                                     </button>
-                                </form>
-                                <form method="POST" style="display: inline;">
-                                    <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
-                                    <button type="submit" name="add_to_cart" class="action-btn add-to-cart">
-                                        <i class="fas fa-cart-plus"></i> Add to Cart
-                                    </button>
-                                </form>
+                                <?php endif; ?>
+                                
                                 <form method="POST" style="display: inline;">
                                     <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
                                     <input type="hidden" name="wishlist_action" value="<?php echo isInWishlist($db, $_SESSION['user_id'], $product['id']) ? 'remove' : 'add'; ?>">
@@ -1262,7 +1321,7 @@ function isInWishlist($db, $user_id, $product_id) {
             });
 
             // Modal action buttons
-            document.querySelector('.add-to-cart-modal').addEventListener('click', function() {
+            document.querySelector('.add-to-cart-modal')?.addEventListener('click', function() {
                 const quantity = parseInt(quantityInput.value);
                 const size = document.querySelector('.size-option.selected')?.textContent;
                 
@@ -1290,7 +1349,7 @@ function isInWishlist($db, $user_id, $product_id) {
                 });
             });
 
-            document.querySelector('.buy-now-modal').addEventListener('click', function() {
+            document.querySelector('.buy-now-modal')?.addEventListener('click', function() {
                 const quantity = parseInt(quantityInput.value);
                 const size = document.querySelector('.size-option.selected')?.textContent;
                 

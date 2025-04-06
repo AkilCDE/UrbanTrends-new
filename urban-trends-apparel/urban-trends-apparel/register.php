@@ -25,10 +25,9 @@ class Auth {
     
     public function register($email, $password, $firstname, $lastname, $address) {
         $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        $stmt = $this->db->prepare("INSERT INTO users (email, password, firstname, lastname, address) VALUES (?, ?, ?, ?, ?)");
+        $stmt = $this->db->prepare("INSERT INTO users (email, password, firstname, lastname, address, is_admin) VALUES (?, ?, ?, ?, ?, 0)");
         return $stmt->execute([$email, $hashed_password, $firstname, $lastname, $address]);
     }
-    
     public function login($email, $password) {
         $stmt = $this->db->prepare("SELECT * FROM users WHERE email = ?");
         $stmt->execute([$email]);
